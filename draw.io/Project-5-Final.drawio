@@ -1,0 +1,71 @@
+<mxfile host="app.diagrams.net" agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36" version="29.5.0">
+  <diagram name="Page-1" id="52uv_XI7HPtxof7oqyKl">
+    <mxGraphModel dx="1107" dy="1671" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="zP_4yafCnn4uGI9z_6G3-9" edge="1" parent="1" source="zP_4yafCnn4uGI9z_6G3-2" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;" target="zP_4yafCnn4uGI9z_6G3-5">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="zP_4yafCnn4uGI9z_6G3-19" connectable="0" parent="zP_4yafCnn4uGI9z_6G3-9" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" value="Publish JSON Commands" vertex="1">
+          <mxGeometry relative="1" x="0.0826" y="2" as="geometry">
+            <mxPoint x="-15" y="23" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="zP_4yafCnn4uGI9z_6G3-2" parent="1" style="rounded=1;whiteSpace=wrap;html=1;align=center;" value="Raspberry PI&lt;br&gt;&lt;br&gt;&lt;div style=&quot;&quot;&gt;&lt;span style=&quot;background-color: transparent; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;NiceGUI Dashboard&lt;br&gt;&lt;br&gt;&lt;div style=&quot;text-align: left;&quot;&gt;&lt;span style=&quot;background-color: transparent; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;- Display Live Stats&lt;/span&gt;&lt;/div&gt;&lt;div style=&quot;text-align: left;&quot;&gt;&lt;span style=&quot;background-color: transparent; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;- Send Unlock Command&lt;/span&gt;&lt;/div&gt;&lt;div style=&quot;text-align: left;&quot;&gt;&lt;span style=&quot;background-color: transparent; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;- Control LED Strip&lt;br&gt;- Control OLED Screensavers&lt;/span&gt;&lt;/div&gt;&lt;div style=&quot;text-align: left;&quot;&gt;&lt;span style=&quot;background-color: transparent; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;- Log Events&lt;/span&gt;&lt;/div&gt;&lt;/span&gt;&lt;/div&gt;" vertex="1">
+          <mxGeometry height="140" width="185" x="20" y="210" as="geometry" />
+        </mxCell>
+        <mxCell id="zP_4yafCnn4uGI9z_6G3-10" edge="1" parent="1" source="zP_4yafCnn4uGI9z_6G3-5" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=-0.006;entryY=0.547;entryDx=0;entryDy=0;entryPerimeter=0;" target="zP_4yafCnn4uGI9z_6G3-6">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="675" y="150" />
+              <mxPoint x="675" y="319" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="zP_4yafCnn4uGI9z_6G3-20" connectable="0" parent="zP_4yafCnn4uGI9z_6G3-10" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" value="Subscribe&lt;div&gt;&lt;br&gt;&lt;/div&gt;" vertex="1">
+          <mxGeometry relative="1" x="-0.0768" y="2" as="geometry">
+            <mxPoint as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="zP_4yafCnn4uGI9z_6G3-5" parent="1" style="ellipse;whiteSpace=wrap;html=1;" value="&lt;div&gt;&lt;div&gt;JSON over MQTT&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;--------------------------------&lt;/div&gt;&lt;div&gt;Raspberry Pi → MQTT (Publish)&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;- unlock_command&lt;/div&gt;&lt;div&gt;- led_mode&lt;/div&gt;&lt;div&gt;- led_brightness&lt;br&gt;- oled_control&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;--------------------------------&lt;/div&gt;&lt;div&gt;ESP32 → MQTT (Publish)&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;- rfid_result (allowed / denied)&lt;/div&gt;&lt;div&gt;- drawer_state (open / closed)&lt;/div&gt;&lt;div&gt;- unlock_status (confirmed / fault)&lt;/div&gt;&lt;div&gt;- heartbeat (online, uptime)&lt;/div&gt;&lt;div&gt;- led_state&lt;/div&gt;&lt;div&gt;- audio_state (if DFPlayer)&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;--------------------------------&lt;/div&gt;&lt;div&gt;Protocol:&lt;/div&gt;&lt;div&gt;- MQTT&lt;/div&gt;&lt;div&gt;- JSON format&lt;/div&gt;&lt;div&gt;- Bidirectional&lt;/div&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;" vertex="1">
+          <mxGeometry height="410" width="330" x="270" y="-110" as="geometry" />
+        </mxCell>
+        <mxCell id="zP_4yafCnn4uGI9z_6G3-6" parent="1" style="rounded=1;whiteSpace=wrap;html=1;" value="ESP32-S3&lt;br&gt;&lt;br&gt;&lt;div style=&quot;&quot;&gt;&lt;div style=&quot;text-align: left;&quot;&gt;&lt;span style=&quot;background-color: transparent; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;- Handles RFID Scanner&lt;/span&gt;&lt;/div&gt;&lt;div style=&quot;text-align: left;&quot;&gt;&lt;span style=&quot;background-color: transparent; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;- Controls Solenoid&lt;/span&gt;&lt;/div&gt;&lt;div style=&quot;text-align: left;&quot;&gt;&lt;span style=&quot;background-color: transparent; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;- Reads Reed Switch&lt;/span&gt;&lt;/div&gt;&lt;div style=&quot;text-align: left;&quot;&gt;&lt;span style=&quot;background-color: transparent; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;- Controls OLED Screen&lt;/span&gt;&lt;/div&gt;&lt;div style=&quot;text-align: left;&quot;&gt;&lt;span style=&quot;background-color: transparent; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;- Controls LED Strip&lt;br&gt;- Controls LED heartbeat&lt;/span&gt;&lt;/div&gt;&lt;br&gt;Possibly:&lt;br&gt;&lt;br&gt;- Handle DFPlayer with MP3&lt;/div&gt;" vertex="1">
+          <mxGeometry height="180" width="210" x="750" y="220" as="geometry" />
+        </mxCell>
+        <mxCell id="zP_4yafCnn4uGI9z_6G3-11" edge="1" parent="1" source="zP_4yafCnn4uGI9z_6G3-6" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0;exitY=0.75;exitDx=0;exitDy=0;entryX=0.669;entryY=1;entryDx=0;entryDy=0;entryPerimeter=0;" target="zP_4yafCnn4uGI9z_6G3-5">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="zP_4yafCnn4uGI9z_6G3-21" connectable="0" parent="zP_4yafCnn4uGI9z_6G3-11" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" value="Publish JSON (Telemetry)" vertex="1">
+          <mxGeometry relative="1" x="0.0386" as="geometry">
+            <mxPoint as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="zP_4yafCnn4uGI9z_6G3-12" edge="1" parent="1" source="zP_4yafCnn4uGI9z_6G3-5" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0;exitY=1;exitDx=0;exitDy=0;entryX=1.003;entryY=0.841;entryDx=0;entryDy=0;entryPerimeter=0;" target="zP_4yafCnn4uGI9z_6G3-2">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="298" y="328" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="zP_4yafCnn4uGI9z_6G3-18" connectable="0" parent="zP_4yafCnn4uGI9z_6G3-12" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" value="Subscribe" vertex="1">
+          <mxGeometry relative="1" x="-0.5704" y="1" as="geometry">
+            <mxPoint y="67" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="zP_4yafCnn4uGI9z_6G3-14" edge="1" parent="1" source="zP_4yafCnn4uGI9z_6G3-13" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" target="zP_4yafCnn4uGI9z_6G3-2">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="90" y="-10" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="zP_4yafCnn4uGI9z_6G3-13" parent="1" style="rounded=1;whiteSpace=wrap;html=1;" value="&lt;span style=&quot;text-align: left;&quot;&gt;User:&lt;br&gt;&lt;/span&gt;&lt;br style=&quot;text-align: left;&quot;&gt;&lt;div style=&quot;text-align: left;&quot;&gt;&lt;span style=&quot;background-color: transparent; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;- Dashboard&lt;/span&gt;&lt;/div&gt;&lt;span style=&quot;&quot;&gt;&lt;div style=&quot;text-align: left;&quot;&gt;&lt;span style=&quot;background-color: transparent; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;- Remote Unlock With code&lt;/span&gt;&lt;/div&gt;&lt;/span&gt;&lt;span style=&quot;&quot;&gt;&lt;div style=&quot;text-align: left;&quot;&gt;&lt;span style=&quot;background-color: transparent; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;- Status Updates&lt;br&gt;- Various Controls&lt;/span&gt;&lt;/div&gt;&lt;/span&gt;" vertex="1">
+          <mxGeometry height="120" width="190" x="50" y="-80" as="geometry" />
+        </mxCell>
+        <mxCell id="zP_4yafCnn4uGI9z_6G3-16" parent="1" style="rounded=1;whiteSpace=wrap;html=1;" value="&lt;div style=&quot;&quot;&gt;&lt;b style=&quot;&quot;&gt;&lt;u style=&quot;&quot;&gt;&lt;font style=&quot;font-size: 20px; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;Working P&lt;span style=&quot;background-color: transparent;&quot;&gt;&lt;font style=&quot;&quot;&gt;arts:&lt;/font&gt;&lt;/span&gt;&lt;/font&gt;&lt;/u&gt;&lt;/b&gt;&lt;/div&gt;&lt;div style=&quot;&quot;&gt;&lt;font style=&quot;color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;&lt;br&gt;&lt;/font&gt;&lt;/div&gt;&lt;div style=&quot;&quot;&gt;&lt;div style=&quot;text-align: left;&quot;&gt;&lt;font style=&quot;color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;&lt;b style=&quot;background-color: transparent;&quot;&gt;-&amp;nbsp;&lt;/b&gt;&lt;span style=&quot;background-color: transparent;&quot;&gt;&lt;b&gt;5V Solenoid&lt;/b&gt;&lt;/span&gt;&lt;/font&gt;&lt;/div&gt;&lt;b&gt;&lt;div style=&quot;text-align: left;&quot;&gt;&lt;b style=&quot;background-color: transparent;&quot;&gt;&lt;font style=&quot;color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;- TB6612 Chip for Solenoid&lt;/font&gt;&lt;/b&gt;&lt;/div&gt;&lt;/b&gt;&lt;/div&gt;&lt;div style=&quot;text-align: left;&quot;&gt;&lt;b&gt;&lt;font style=&quot;color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;- NeoPixel LED Strip (RGB)&lt;/font&gt;&lt;/b&gt;&lt;/div&gt;&lt;div style=&quot;&quot;&gt;&lt;div style=&quot;text-align: left;&quot;&gt;&lt;b style=&quot;background-color: transparent;&quot;&gt;&lt;font style=&quot;color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;- OLED Display&lt;/font&gt;&lt;/b&gt;&lt;/div&gt;&lt;font style=&quot;color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;&lt;b style=&quot;&quot;&gt;&lt;div style=&quot;text-align: left;&quot;&gt;&lt;b style=&quot;background-color: transparent;&quot;&gt;- Reed Switch&lt;/b&gt;&lt;/div&gt;&lt;div style=&quot;text-align: left;&quot;&gt;&lt;b style=&quot;background-color: transparent;&quot;&gt;- Magnet&lt;br&gt;- 1x small led for power heartbeat&lt;/b&gt;&lt;/div&gt;&lt;/b&gt;&lt;br&gt;&lt;/font&gt;&lt;div style=&quot;text-align: left;&quot;&gt;&lt;b style=&quot;background-color: transparent;&quot;&gt;&lt;font style=&quot;color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;- 4xAA Battery Pack&lt;/font&gt;&lt;/b&gt;&lt;/div&gt;&lt;b style=&quot;&quot;&gt;&lt;div style=&quot;text-align: left;&quot;&gt;&lt;b style=&quot;background-color: transparent;&quot;&gt;&lt;font style=&quot;color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;- 1x9v Battery for ESP32 Power&lt;/font&gt;&lt;/b&gt;&lt;/div&gt;&lt;font style=&quot;color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;&lt;br&gt;-----------------------------------------&lt;br&gt;&lt;font style=&quot;font-size: 16px;&quot;&gt;Possibly:&lt;br&gt;&lt;/font&gt;&lt;br&gt;&lt;/font&gt;&lt;div style=&quot;text-align: left;&quot;&gt;&lt;b style=&quot;background-color: transparent;&quot;&gt;&lt;font style=&quot;color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;- DFPlayer Audio&lt;/font&gt;&lt;/b&gt;&lt;/div&gt;&lt;div&gt;&lt;b style=&quot;background-color: transparent; color: light-dark(rgb(255, 255, 255), rgb(18, 18, 18));&quot;&gt;&lt;br&gt;&lt;/b&gt;&lt;/div&gt;&lt;/b&gt;&lt;/div&gt;" vertex="1">
+          <mxGeometry height="290" width="300" x="680" y="-150" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
