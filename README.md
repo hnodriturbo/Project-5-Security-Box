@@ -1,42 +1,66 @@
 # Project 5 – 3D Printed Security Drawer Box
 
-## Overview
-
-3D printed IoT security drawer box built around an ESP32-S3 + Raspberry Pi (NiceGUI).
-
-Unlock:
-- RFID authentication
-- Remote MQTT unlock from dashboard
-
-The system validates real physical movement using a reed switch and reports unlock confirmed vs fault.
+![Fusion Design](my-awesome-design-autodesk-fusion.png)
 
 ---
 
-## System Architecture
+## 1. Project Overview
+
+3D printed IoT security drawer box built around an ESP32-S3 and Raspberry Pi running NiceGUI.
+
+### Unlock Methods
+- RFID authentication  
+- Remote MQTT unlock from dashboard  
+
+The system validates real physical drawer movement using a reed switch and reports whether the unlock was confirmed or failed.
+
+This project demonstrates:
+
+- IoT communication using MQTT  
+- JSON-based data exchange  
+- Real actuator control (solenoid)  
+- Physical validation using reed switch  
+- Mechanical precision 3D design  
+
+---
+
+## 2. System Architecture
 
 ESP32 ↔ MQTT Broker ↔ Raspberry Pi (NiceGUI)
 
-ESP32:
-- RFID auth
-- Solenoid control (TB6612FNG)
-- Reed switch state detection
-- OLED feedback
-- LED animations
-- Heartbeat + JSON status
+### ESP32
+- Handles RFID authentication  
+- Controls solenoid via TB6612FNG  
+- Reads reed switch state  
+- Drives OLED display  
+- Controls LED strip  
+- Sends heartbeat and status data  
 
-Raspberry Pi:
-- Dashboard UI
-- Remote unlock command
-- Status monitoring
-- Logging
-
-Architecture file:
-- `draw.io/Project-5-Final.drawio`
-- `draw.io/Project-5-Final.png` (for GitHub preview)
+### Raspberry Pi
+- Hosts NiceGUI dashboard  
+- Sends remote unlock command  
+- Displays system status  
+- Logs events  
 
 ---
 
-## Hardware
+## 3. Flow Chart
+
+<p align="center">
+  <img src="draw.io_Flow_Chart.png" width="700">
+</p>
+
+The system flow chart was created in draw.io and illustrates:
+
+- Authentication logic  
+- Unlock decision flow  
+- Reed confirmation  
+- Fault handling  
+- Reset logic  
+
+---
+
+## 4. Hardware
 
 - ESP32-S3  
 - TB6612FNG motor driver  
@@ -44,121 +68,87 @@ Architecture file:
 - Reed switch + magnet  
 - MFRC522 RFID reader  
 - 2.42" OLED (SSD1309 SPI)  
-- NeoPixel LED strip  
-- 9V battery (logic)  
-- 4xAA battery pack (solenoid)  
+- NeoPixel LED strip (GRB)  
+- 9V battery (logic power)  
+- 4xAA battery pack (solenoid power)  
 - Raspberry Pi  
 
 ---
 
-## MQTT
+## 5. MQTT & IoT Protocol
 
-Broker: `broker.emqx.io`
-Backup Broker: 
+Communication protocol used:
 
-Topics:
-- `security_box/status`
-- `security_box/unlock`
-- `security_box/heartbeat`
+- MQTT  
+- JSON  
 
-### ESP32 JSON example
+Broker currently used:
 
-    {
-      "device": "security_box",
-      "drawer_state": "closed",
-      "rfid_result": "allowed",
-      "unlock_status": "confirmed",
-      "uptime": 15342
-    }
+`broker.emqx.io`
 
-### Dashboard command example
+All communication between ESP32 and Raspberry Pi is handled using structured JSON messages over MQTT.
 
-    {
-      "command": "unlock",
-      "source": "dashboard"
-    }
-
-Protocol:
-- MQTT
-- JSON
+Detailed message formats will be documented separately in the project documentation.
 
 ---
 
-## Unlock Logic
+## 6. Software
 
-1. RFID scanned  
-2. UID checked against whitelist  
-3. If allowed → solenoid pulse  
-4. Wait for reed switch change  
-5. If OPEN detected → confirm unlock  
-6. If no change → fault  
-7. Drawer closes → reset to locked  
+### ESP32
 
-Flowchart included in draw.io project.
+Programmed in **MicroPython**.  
+Handles hardware interaction, MQTT communication, state management, and feedback systems.
 
----
+### Raspberry Pi
 
-## Software Structure
+Runs **NiceGUI (Python)**.  
+Provides dashboard interface, remote control functionality, and live monitoring.
 
-### ESP32 (MicroPython) — `esp32/`
-
-- main.py will import and use special files for handling each part. 
-  - This will be the most challenging part in coding, making everything fit together in one file.
-- rfid logic  
-- solenoid control  
-- mqtt client  
-- state manager  
-- oled control  
-
-Testing utilities:
-- `esp32/testing/`
-
-### Raspberry Pi (NiceGUI) — `raspberry_pi/`
-
-- dashboard app  
-- MQTT subscriber  
-- remote unlock publisher  
-- log viewer  
+Detailed module breakdown will be documented separately.
 
 ---
 
-## CAD
+## 7. CAD & Mechanical Design
 
-`cad/`
+Folder: `cad/`
 
-- STL exports  
+Contains:
+
 - Final printable box  
-- Drawer  
+- Sliding drawer  
 - Solenoid mounting structure  
+- Drawer holder mechanism  
+- STL exports  
 
 Designed in Autodesk Fusion.
 
----
-
-## Testing & Validation
-
-Validated:
-
-- Dashboard usage
-- Solenoid activation - OLED Shows confirmation
-- Reed switch confirmation - OLED - || -
-- RFID allow/deny logic - OLED - || -
-- MQTT communication - OLED - || -
-- Remote unlock via dashboard with correct code - OLED - || -
-- Fault handling done in code - OLED - || -
-
-Screenshots:
-- `docs/screenshots/`
+The design focuses heavily on mechanical precision due to the solenoid having approximately 2mm of usable locking depth.
 
 ---
 
-## Known Limits
+## 8. Known Limitations
 
-- Battery powered (demo build)  
-- Heavy LED + solenoid load may cause voltage drop  
+- Battery powered demo build  
+- High LED + solenoid load may cause voltage drop  
+- Mechanical tolerances will be fully validated after final print  
 
 ---
 
-## Optional (If Time)
+## 9. Future Improvements
 
 - DFPlayer Mini + speaker for audio feedback  
+- Internal voltage regulation  
+- Improved drawer alignment refinement  
+- Local MQTT broker on Raspberry Pi  
+
+---
+
+## 10. Project Coverage
+
+This project fulfills:
+
+- Telemetry  
+- Actuator control  
+- Raspberry Pi + NiceGUI integration  
+- Full IoT physical prototype design  
+- 3D printed mechanical system  
