@@ -132,10 +132,16 @@ Structural reinforcement was added where necessary to reduce flex around locking
 The following mechanical uncertainties cannot be confirmed until physical testing:
 
 - Will the 2mm solenoid locking depth reliably hold the drawer while springs push forward?
+
 - When spring force is applied to the locking pin, will the solenoid release smoothly or bind due to lateral pressure?
+  -  TRUE - Solenoid cannot open when even the slightest pressure is on it. I have no time to reprint new design to make the locking in a different way structurally. But would if i had more // 🕗 
+
 - Will rail tolerances provide smooth sliding without wobble?
-- Will the drawer self-align perfectly into the locking pocket?
+
+- Will the drawer self-align perfectly into the rails and locking pin lock the drawer?
+
 - Will friction over time wear down the locking edge?
+  - No it will not since this is only a part project that will be taken apart when finished.
 
 These will only be confirmed during:
 - First full assembly
@@ -146,11 +152,17 @@ These will only be confirmed during:
 
 ## Future Reports
 
-- ESP32 Integration Phase
-- MQTT Communication Testing
-- NiceGUI Dashboard Integration
-- Fault Handling Validation
-- Final Mechanical Assembly
-- Testing & Performance Results
+- ESP32 Integration Phase :
+  - 
+- MQTT Communication Testing :
+  - 
+- NiceGUI Dashboard Integration :
+  - 
+- Fault Handling Validation :
+  - 
+- Final Mechanical Assembly:
+  - 
+- Testing & Performance Results:
+  - Testing the solenoid with all connected parts (not inside the box) seems good. Only problem is we need to exclude the springs because the solenoid will not open when friction is pushing on it by the springs pushing the drawer outwards.
 
 ---
