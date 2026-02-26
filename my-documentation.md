@@ -10,6 +10,14 @@ It describes design decisions, challenges, mechanical iterations, and open quest
 During this period I focused heavily on the mechanical design of the box in Autodesk Fusion.  
 This phase required significant precision because the solenoid locking mechanism only has approximately **2mm of usable locking pin depth**, which leaves very little room for error.
 
+--- 
+
+## 26 Feb - Box printing failed, but drawer and solenoid stand + handle on drawer printed
+
+I will have the box late or on Monday, 2 days before assignment completion so i have started working on the codings, having everything connected together at home illustrating the box design. This is a complex coding system that I'm designing so for ease of commanding everything I created a class file for every component that will be used, so instances can call easily on premade functions within those instance related classes.
+
+PROBLEM: I thought the pin would have more power but 4xAA is not giving the pin the power to pull in when pressure is on it. Even just a tiny bit of pressure so the spring system will be withdrawed from the design and unlocking will unlock for 5 seconds and user has to manually open the drawer but otherwise it's locked into place by the solenoid. I would need more power then 4xAA batteries for making the pin pull in with force or this is just so basic and small solenoid that I must redesign this. It was not the main purpose but I will have to acumulate to these conditions and create new TRUE PURPOSE of the box by having the user having to open the drawer manually when presented with phone, card, keychain or command from dashboard. I will focus more on the engine design, the lightings and more to make up for this and create fully functional dashboard with NiceGUI that can make many different commands to the box, change screen main texts, change lighting scenes, unlock with a code (code only unlock from dashboard for "security") and more features will also be available in the dashboard.
+
 ### CAD Tool Decision
 
 I chose Autodesk Fusion because it provides:
