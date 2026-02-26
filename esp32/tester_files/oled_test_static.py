@@ -37,7 +37,7 @@ time.sleep(2.5)
 
 # Progress bar test (still non-animated)
 screen.clear()
-screen.draw_center("PROGRESS", y=0, clear_first=False)
+screen.draw_center("PROGRESS", y=0, clear_first=True )
 screen.draw_progress(75, y=54, height=8)
 time.sleep(3)
 
