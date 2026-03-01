@@ -1,249 +1,227 @@
-# =============================
-# file: mqtt_broker.py
-# =============================
-# Purpose:
-# - Simple MQTT connector that does NOT manage WiFi.
-# - Try PRIMARY broker first, then FALLBACK automatically.
-# - Subscribe to one topic and forward incoming JSON to your handler.
-# - Publish JSON immediately (drop messages if offline).
-#
-# Why this replaces mqtt_as:
-# - mqtt_as may touch WiFi internals and cause "Wifi Internal State Error".
-# - umqtt.simple only uses the existing WiFi connection and does not reconfigure SSID.
-#
-# Requirement:
-# - WiFi must already be connected by setup_wifi_and_time.py before calling start().
+# esp32/mqtt_broker.py
+"""
+MQTT manager for the Security Box ESP32 side.
+
+Design — two asyncio tasks:
+    rx_task():  polls check_msg() every 50ms so other tasks keep running.
+                Reconnects automatically if the socket drops.
+    tx_task():  drains an outbound list-queue and publishes JSON every 20ms.
+                Drops oldest messages if the queue grows past TX_QUEUE_MAX.
+
+Why two tasks?
+    RX never waits on TX. A slow or failed publish cannot delay incoming
+    commands. Both loops yield frequently so RFID, OLED, and solenoid tasks
+    are never starved.
+
+MicroPython constraints handled here:
+    - umqtt.simple is synchronous — use check_msg() (non-blocking), not wait_msg()
+    - No asyncio.Queue on MicroPython — plain list used as a FIFO queue
+    - umqtt.simple has no reconnect() — create a new MQTTClient on each attempt
+    - All JSON decode is inside try/except — bad messages never crash the task
+
+Usage:
+    mqtt = MqttBroker(client_id="box_001", on_message=my_callback)
+    mqtt.start_tasks()   # call after asyncio loop is running
+    mqtt.publish_nowait({"event": "boot"})
+"""
 
 import uasyncio as asyncio
 import ujson
-
 from umqtt.simple import MQTTClient
 
 
-# -----------------------------
-# MQTT defaults (security box)
-# -----------------------------
+# Broker addresses — primary is the Raspberry Pi on the school LAN
+PRIMARY_BROKER  = "10.201.48.7"
+FALLBACK_BROKER = "broker.emqx.io"
+
+# Single topic for all messages (commands in, telemetry out)
 MQTT_TOPIC = "1404TOPIC"
 
-PRIMARY_BROKER = "10.201.48.7"      # Raspberry Pi Mosquitto (school network)
-FALLBACK_BROKER = "broker.emqx.io"  # Public fallback
+# How often rx_task() calls check_msg() (milliseconds)
+RX_POLL_MS = 50
+
+# How often tx_task() checks the outbound queue (milliseconds)
+TX_POLL_MS = 20
+
+# Maximum queued outbound messages before oldest are dropped
+TX_QUEUE_MAX = 10
+
+# Seconds to wait between reconnect attempts
+RECONNECT_WAIT_MS = 5000
 
 
-# -----------------------------
-# Small helpers
-# -----------------------------
-def force_dict(value):
-    if isinstance(value, dict):
-        return value
-    return {}
-
-
-def merge_dicts(base_dict, extra_dict):
-    base_dict = force_dict(base_dict)
-    extra_dict = force_dict(extra_dict)
-
-    for key in extra_dict:
-        base_dict[key] = extra_dict[key]
-
-    return base_dict
-
-
-def decode_to_str(value):
-    if isinstance(value, (bytes, bytearray)):
-        try:
-            return value.decode()
-        except Exception:
-            return ""
-    return str(value)
-
-
-# -----------------------------
-# MQTT broker manager
-# -----------------------------
 class MqttBroker:
-    def __init__(
-        self,
-        topic=MQTT_TOPIC,
-        primary=PRIMARY_BROKER,
-        fallback=FALLBACK_BROKER,
-        client_id="esp32_security_box",
-        keepalive=30,
-    ):
-        self.topic = str(topic)
-        self.primary = str(primary)
-        self.fallback = str(fallback)
 
-        self.client_id = str(client_id)
-        self.keepalive = int(keepalive)
+    def __init__(self, client_id,
+                 topic=MQTT_TOPIC,
+                 primary_broker=PRIMARY_BROKER,
+                 fallback_broker=FALLBACK_BROKER,
+                 on_message=None):
+        """
+        Prepare the MQTT manager. Does NOT connect — call start_tasks() after
+        the asyncio event loop starts (i.e., from inside asyncio.run()).
 
-        self.client = None
-        self.is_connected = False
-        self.broker_in_use = ""
+        Args:
+            client_id:      Unique string ID for this MQTT client
+            topic:          Topic to subscribe to and publish on
+            primary_broker: Preferred broker IP (Raspberry Pi)
+            fallback_broker:Public broker if primary is unreachable
+            on_message:     Callback(payload_dict) fired on every valid inbound JSON
+        """
+        self.client_id       = str(client_id)
+        self.topic           = topic.encode()   # umqtt.simple expects bytes for topic
+        self.primary_broker  = str(primary_broker)
+        self.fallback_broker = str(fallback_broker)
+        self.on_message      = on_message
 
-        # Lock onto the first broker that succeeds (no switching while WiFi stays up)
-        self.locked_broker = None
+        # Connection state (read by controller to show "MQTT OK" on OLED)
+        self.connected     = False
+        self.active_broker = None
 
-        # handler(topic_str, payload_dict) -> may return coroutine or None
-        self.command_handler = None
+        # Outbound queue — list used as a FIFO (append right, pop left)
+        self.tx_queue_utility = []
 
-        self.connect_task = None
-    
-    # Wait until connected for showing screen information
-    async def wait_until_connected(self):
-        while not self.is_connected:
-            await asyncio.sleep_ms(200)
-            
-    # If a broker already worked, only ever try that one again
-    def pick_brokers_to_try(self):
-        if self.locked_broker:
-            return [self.locked_broker]
-        return [self.primary, self.fallback]
+        # The umqtt.simple client instance (replaced on each reconnect)
+        self.client_utility = None
 
-    # First successful broker becomes the locked one
-    def mark_connected_broker(self, broker):
-        if not self.locked_broker:
-            self.locked_broker = str(broker)
-            
-    # -----------------------------
-    # Set inbound JSON handler
-    # -----------------------------
-    def set_command_handler(self, handler_function):
-        self.command_handler = handler_function
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
 
-
-    # -----------------------------
-    # Start background loop
-    # -----------------------------
-    def start(self):
-        if self.connect_task is None:
-            self.connect_task = asyncio.create_task(self.connect_loop())
-
-
-    # -----------------------------
-    # Internal RX callback from umqtt
-    # -----------------------------
-    def on_message(self, topic, msg):
+    def on_raw_message_utility(self, topic, msg):
+        """
+        Called synchronously by umqtt.simple when check_msg() finds a message.
+        Decodes JSON and forwards to the on_message callback.
+        Bad JSON is silently ignored — never crashes.
+        """
         try:
-            topic_text = decode_to_str(topic)
-            msg_text = decode_to_str(msg)
-
-            payload_any = ujson.loads(msg_text)
-            payload_dict = force_dict(payload_any)
-
-            if self.command_handler:
-                result = self.command_handler(topic_text, payload_dict)
-
-                # Schedule async handler if it returned a coroutine
-                if (result is not None) and hasattr(result, "send"):
-                    asyncio.create_task(result)
-
-        except Exception as error:
-            print("MQTT RX error:", str(error))
-
-
-    # -----------------------------
-    # Publish JSON (drop if offline)
-    # -----------------------------
-    async def publish(self, payload_dict, topic=None):
-        payload_dict = force_dict(payload_dict)
-        topic_to_use = self.topic if topic is None else str(topic)
-
-        if (not self.is_connected) or (self.client is None):
+            payload = ujson.loads(msg)
+        except Exception:
+            print("[MQTT] ignoring bad JSON:", msg[:40])
             return
 
-        try:
-            payload_bytes = ujson.dumps(payload_dict).encode()
-            self.client.publish(topic_to_use, payload_bytes)
-        except Exception as error:
-            print("MQTT TX error:", str(error))
-            self.reset_connection_state()
+        if self.on_message is not None:
+            try:
+                self.on_message(payload)
+            except Exception as e:
+                print("[MQTT] on_message error:", e)
 
+    def try_connect_utility(self):
+        """
+        Attempt a fresh connection to primary then fallback broker.
+        Creates a new MQTTClient on each attempt (umqtt.simple has no reconnect).
+        Returns True on success, False if both brokers fail.
+        """
+        for broker_addr in (self.primary_broker, self.fallback_broker):
+            try:
+                print("[MQTT] connecting to", broker_addr)
+                client = MQTTClient(self.client_id, broker_addr, port=1883, keepalive=30)
+                client.set_callback(self.on_raw_message_utility)
+                client.connect()
+                client.subscribe(self.topic)
+                self.client_utility = client
+                self.active_broker  = broker_addr
+                self.connected      = True
+                print("[MQTT] connected:", broker_addr)
+                return True
+            except Exception as e:
+                print("[MQTT] connect failed:", broker_addr, e)
 
-    def publish_nowait(self, payload_dict, topic=None):
-        asyncio.create_task(self.publish(payload_dict, topic=topic))
+        self.connected      = False
+        self.client_utility = None
+        self.active_broker  = None
+        return False
 
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
 
-    async def publish_event(self, event_name, data_dict=None):
-        payload = {"event": str(event_name)}
-        payload = merge_dicts(payload, data_dict)
-        await self.publish(payload)
+    def publish_nowait(self, payload_dict):
+        """
+        Enqueue a message for publishing. Non-blocking — safe to call from
+        anywhere including RFID callbacks and MQTT command handlers.
 
+        If the queue is full, the oldest entry is dropped to make room.
+        tx_task() will pick this up within TX_POLL_MS milliseconds.
 
-    async def publish_log(self, message, level="info", source="esp32"):
-        payload = {
-            "event": "log",
-            "level": str(level),
-            "source": str(source),
-            "message": str(message),
-        }
-        await self.publish(payload)
+        Args:
+            payload_dict: Python dict — will be serialized to JSON before publish
+        """
+        if len(self.tx_queue_utility) >= TX_QUEUE_MAX:
+            self.tx_queue_utility.pop(0)   # drop oldest to cap memory use
 
+        self.tx_queue_utility.append(payload_dict)
 
-    async def publish_state(self, state_name, value, details_dict=None):
-        payload = {
-            "event": "state",
-            "name": str(state_name),
-            "value": value,
-        }
-        payload = merge_dicts(payload, details_dict)
-        await self.publish(payload)
+    def start_tasks(self):
+        """
+        Create rx_task and tx_task as asyncio tasks. Call this once, inside
+        the asyncio event loop (from controller.start() or similar).
+        """
+        asyncio.create_task(self.rx_task())
+        asyncio.create_task(self.tx_task())
 
+    # ------------------------------------------------------------------
+    # Asyncio tasks
+    # ------------------------------------------------------------------
 
-    # -----------------------------
-    # Reset connection state
-    # -----------------------------
-    def reset_connection_state(self):
-        self.is_connected = False
-        self.client = None
+    async def rx_task(self):
+        """
+        Receive loop — runs forever as an asyncio task.
 
-
-    # -----------------------------
-    # Connect + listen loop (primary -> fallback)
-    # -----------------------------
-    async def connect_loop(self):
+        Flow:
+            1. If not connected: try to connect (retry every RECONNECT_WAIT_MS)
+            2. Call check_msg() — non-blocking, fires on_raw_message_utility if a
+               message is ready, returns immediately otherwise
+            3. On OSError (socket disconnected): mark disconnected, retry
+            4. Always yield with sleep_ms(RX_POLL_MS) between calls
+        """
         while True:
+            if not self.connected:
+                ok = self.try_connect_utility()
+                if not ok:
+                    # Wait before trying again to avoid hammering the broker
+                    await asyncio.sleep_ms(RECONNECT_WAIT_MS)
+                    continue
 
-            if self.is_connected and (self.client is not None):
+            # Poll for one incoming message (non-blocking)
+            try:
+                self.client_utility.check_msg()
+            except OSError as e:
+                print("[MQTT] rx disconnected:", e)
+                self.connected      = False
+                self.client_utility = None
+            except Exception as e:
+                print("[MQTT] rx error:", e)
+                self.connected      = False
+                self.client_utility = None
+
+            # Yield — lets RFID, OLED, solenoid, and tx_task run
+            await asyncio.sleep_ms(RX_POLL_MS)
+
+    async def tx_task(self):
+        """
+        Transmit loop — runs forever as an asyncio task.
+
+        Flow:
+            1. If the queue is non-empty and connected: serialize and publish
+            2. On error: mark disconnected (rx_task will reconnect)
+            3. Always yield with sleep_ms(TX_POLL_MS)
+
+        Note: if not connected, messages stay in the queue until rx_task
+        establishes a new connection. Queue is capped at TX_QUEUE_MAX so
+        memory usage stays bounded during an outage.
+        """
+        while True:
+            if self.tx_queue_utility and self.connected:
+                payload_dict = self.tx_queue_utility.pop(0)
                 try:
-                    self.client.check_msg()
-                except Exception as error:
-                    print("MQTT connection lost:", str(error))
-                    self.reset_connection_state()
+                    raw = ujson.dumps(payload_dict)
+                    self.client_utility.publish(self.topic, raw)
+                except Exception as e:
+                    print("[MQTT] tx error:", e)
+                    self.connected      = False
+                    self.client_utility = None
+                    # Put the message back at the front so it isn't lost
+                    self.tx_queue_utility.insert(0, payload_dict)
 
-                await asyncio.sleep_ms(200)
-                continue
-
-            # Not connected -> try brokers in order
-            for broker in self.pick_brokers_to_try():
-                self.broker_in_use = str(broker)
-
-                try:
-                    # New client each attempt (clean state)
-                    self.client = MQTTClient(
-                        client_id=self.client_id,
-                        server=self.broker_in_use,
-                        keepalive=self.keepalive,
-                    )
-
-                    self.client.set_callback(self.on_message)
-                    self.client.connect()
-                    self.client.subscribe(self.topic)
-
-                    self.is_connected = True
-                    print("MQTT connected:", self.broker_in_use, "topic:", self.topic)
-                    self.mark_connected_broker(self.broker_in_use)
-
-                    # Optional “online” event
-                    try:
-                        await self.publish_event("esp_online", {"broker": self.broker_in_use})
-                    except Exception:
-                        pass
-
-                    break
-
-                except Exception as error:
-                    print("MQTT connect failed:", self.broker_in_use, "error:", str(error))
-                    self.reset_connection_state()
-                    await asyncio.sleep_ms(900)
-
-            await asyncio.sleep_ms(900)
+            await asyncio.sleep_ms(TX_POLL_MS)

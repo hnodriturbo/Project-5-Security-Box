@@ -1,199 +1,153 @@
-# =============================
-# file: classes/led_strip_class.py
-# =============================
-# Purpose:
-# - Control a WS2812/NeoPixel LED strip using fixed GPIO14.
-# - Provide simple helper functions and test patterns.
-#
-# Safety:
-# - Brightness is permanently limited by MAX_BRIGHTNESS.
-# - Any higher brightness request is automatically clamped.
+# esp32/classes/led_strip_class.py
+"""
+NeoPixel LED strip helper for the 50-LED GRB WS2812B strip.
 
-from machine import Pin
-import neopixel
-import time
+Hardware: GPIO14, 50 LEDs, WS2812B, driven at 3.3V logic (works for most WS2812B).
+
+Usage:
+    from classes.led_strip_class import LedStrip
+    led = LedStrip()
+    led.fill(0, 0, 200)   # blue
+    asyncio.run(led.flow_five_leds_circular_async(cycles=2))
+"""
+
 import uasyncio as asyncio
+from machine import Pin
+from neopixel import NeoPixel
+
+
+# Default hardware config — change here if you rewire
+LED_STRIP_PIN      = 14
+LED_COUNT          = 50
+DEFAULT_BRIGHTNESS = 0.15   # 15% — bright enough to see, low enough to not blind
+
 
 class LedStrip:
 
-    # Absolute safety brightness limit (never exceeded)
-    MAX_BRIGHTNESS = 0.25
+    def __init__(self, pin=LED_STRIP_PIN, led_count=LED_COUNT,
+                 brightness=DEFAULT_BRIGHTNESS, color_order="GRB"):
+        """
+        Set up the NeoPixel strip.
 
-    # Fixed data pin for this project
-    DATA_PIN_NUMBER = 14
+        Args:
+            pin:         GPIO number for the data line
+            led_count:   Total LEDs on the strip
+            brightness:  0.0 to 1.0 scale factor applied before every write
+            color_order: "GRB" (WS2812B default) or "RGB" — controls channel swap
+        """
+        self.led_count   = int(led_count)
+        self.color_order = color_order
+        self.brightness_utility = max(0.0, min(1.0, float(brightness)))
 
-    # Create LED strip controller (GPIO14 is fixed)
-    def __init__(self, led_count=50, brightness=0.15, color_order="RGB"):
+        self.neo = NeoPixel(Pin(int(pin), Pin.OUT), self.led_count)
 
-        # Store configuration
-        self.led_count = int(led_count)
-        self.color_order = str(color_order).upper()
-
-        # Clamp brightness to safe range
-        self.brightness = self.clamp_brightness_utility(brightness)
-
-        # Setup hardware pin and pixel buffer
-        self.data_pin = Pin(self.DATA_PIN_NUMBER, Pin.OUT)
-        self.pixels = neopixel.NeoPixel(self.data_pin, self.led_count)
-
-        # Start in safe OFF state
+        # Start with all LEDs off
         self.turn_off()
 
-    # Clamp brightness into safe allowed range
-    def clamp_brightness_utility(self, brightness):
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
 
-        brightness_value = float(brightness)
+    def scale_utility(self, r, g, b):
+        """Apply brightness and clamp to 0-255. Returns (r, g, b) ints."""
+        br = self.brightness_utility
+        return (
+            int(max(0, min(255, r * br))),
+            int(max(0, min(255, g * br))),
+            int(max(0, min(255, b * br))),
+        )
 
-        if brightness_value < 0.0:
-            brightness_value = 0.0
+    def write_pixel_utility(self, index, r, g, b):
+        """
+        Write one pixel into the NeoPixel buffer (no hardware write yet).
+        Handles GRB vs RGB channel order so the caller always uses (r, g, b).
+        """
+        sr, sg, sb = self.scale_utility(r, g, b)
+        if self.color_order == "GRB":
+            # WS2812B stores Green in the first byte position
+            self.neo[index] = (sg, sr, sb)
+        else:
+            self.neo[index] = (sr, sg, sb)
 
-        if brightness_value > self.MAX_BRIGHTNESS:
-            brightness_value = self.MAX_BRIGHTNESS
+    # ------------------------------------------------------------------
+    # Public sync methods
+    # ------------------------------------------------------------------
 
-        return brightness_value
-
-    # Update brightness (always clamped)
-    def set_brightness(self, brightness):
-        self.brightness = self.clamp_brightness_utility(brightness)
-
-    # Send current buffer to LED strip
     def show(self):
-        self.pixels.write()
+        """Push the current pixel buffer to the hardware strip."""
+        self.neo.write()
 
-    # Turn entire strip OFF immediately
     def turn_off(self):
-        self.pixels.fill((0, 0, 0))
-        self.show()
+        """Turn all LEDs off immediately."""
+        self.neo.fill((0, 0, 0))
+        self.neo.write()
 
-    # Convert RGB input to strip order + apply brightness
-    def rgb_to_strip_tuple_utility(self, red, green, blue):
+    def fill(self, r, g, b):
+        """Fill every LED with one color and push to hardware."""
+        for i in range(self.led_count):
+            self.write_pixel_utility(i, r, g, b)
+        self.neo.write()
 
-        # Clamp raw channels to valid 0–255
-        red_value = max(0, min(255, int(red)))
-        green_value = max(0, min(255, int(green)))
-        blue_value = max(0, min(255, int(blue)))
+    def set_pixel(self, index, r, g, b):
+        """Set one pixel and push immediately."""
+        self.write_pixel_utility(index, r, g, b)
+        self.neo.write()
 
-        # Apply brightness scaling
-        scaled_red = int(red_value * self.brightness)
-        scaled_green = int(green_value * self.brightness)
-        scaled_blue = int(blue_value * self.brightness)
+    def set_brightness(self, level):
+        """
+        Change the brightness scale (0.0 to 1.0).
+        Does NOT push to hardware — call fill() or show() after to apply visually.
+        """
+        self.brightness_utility = max(0.0, min(1.0, float(level)))
 
-        # Map to configured strip color order
-        if self.color_order == "RGB":
-            return (scaled_red, scaled_green, scaled_blue)
+    # ------------------------------------------------------------------
+    # Async animation
+    # ------------------------------------------------------------------
 
-        # Default to GRB (common WS2812 order)
-        return (scaled_green, scaled_red, scaled_blue)
+    async def flow_five_leds_circular_async(self, r=0, g=0, b=200,
+                                             cycles=3, delay_ms=40):
+        """
+        Animate a 5-LED window that travels around the strip in a circle.
 
-    # Set one LED (buffer only, call show() to apply)
-    def set_pixel(self, index, red, green, blue):
+        Why this fixes the hiccup:
+            Each frame ends with 'await asyncio.sleep_ms(delay_ms)'.
+            During that sleep, uasyncio runs all other tasks — RFID scan,
+            OLED updates, MQTT polling. The animation never holds the event
+            loop longer than one neo.write() call (~1-2ms for 50 LEDs).
 
-        pixel_index = int(index)
+        Args:
+            r, g, b:   Color of the moving window (default: blue)
+            cycles:    How many full rotations before the coroutine returns
+            delay_ms:  Time between frames — 40ms gives ~25 effective fps
 
-        if pixel_index < 0 or pixel_index >= self.led_count:
-            return
+        Notes:
+            - asyncio.CancelledError is caught so the strip turns off cleanly
+              when a new event (RFID, remote cmd) cancels the running task.
+            - Re-raises CancelledError so uasyncio marks the task as cancelled.
+        """
+        window = 5   # number of lit LEDs in the moving tail
+        total_frames = self.led_count * cycles
 
-        self.pixels[pixel_index] = self.rgb_to_strip_tuple_utility(red, green, blue)
+        try:
+            for frame in range(total_frames):
+                head = frame % self.led_count
 
-    # Fill entire strip with one color and write immediately
-    def fill(self, red, green, blue):
+                # Clear the entire buffer before writing the new window
+                for i in range(self.led_count):
+                    self.neo[i] = (0, 0, 0)
 
-        strip_color = self.rgb_to_strip_tuple_utility(red, green, blue)
+                # Write the 5-LED window, wrapping around at the end
+                for offset in range(window):
+                    pixel_index = (head + offset) % self.led_count
+                    self.write_pixel_utility(pixel_index, r, g, b)
 
-        self.pixels.fill(strip_color)
-        self.show()
+                # Push to hardware — takes ~1-2ms
+                self.neo.write()
 
-    async def flow_five_leds_circular_async(self, cycles=3, delay_ms=40):
+                # YIELD HERE — this is the critical point that prevents blocking
+                await asyncio.sleep_ms(delay_ms)
 
-        tail_strengths = [1.0, 0.6, 0.35, 0.2, 0.1]
-        total_steps = self.led_count * int(cycles)
-
-        for step in range(total_steps):
-
-            head_index = step % self.led_count
-            progress = head_index / (self.led_count - 1)
-
-            if progress <= 0.5:
-                blend = progress / 0.5
-                red_value = int(255 * (1 - blend))
-                green_value = int(255 * blend)
-                blue_value = 0
-            else:
-                blend = (progress - 0.5) / 0.5
-                red_value = 0
-                green_value = int(255 * (1 - blend))
-                blue_value = int(255 * blend)
-
-            # Clear buffer only (do NOT call turn_off here)
-            self.pixels.fill((0, 0, 0))
-
-            for offset in range(5):
-                pixel_index = (head_index - offset) % self.led_count
-                strength = tail_strengths[offset]
-
-                self.set_pixel(
-                    pixel_index,
-                    int(red_value * strength),
-                    int(green_value * strength),
-                    int(blue_value * strength),
-                )
-
-            self.show()
-            await asyncio.sleep_ms(int(delay_ms))
-
-        self.turn_off()
-        
-    # =============================
-    # TESTER FUNCTIONS
-    # =============================
-    # Quick wiring + color test
-    def test_solid_colors(self, hold_ms=600):
-
-        self.fill(255, 0, 0)
-        time.sleep_ms(int(hold_ms))
-
-        self.fill(0, 255, 0)
-        time.sleep_ms(int(hold_ms))
-
-        self.fill(0, 0, 255)
-        time.sleep_ms(int(hold_ms))
-
-        self.fill(255, 255, 255)
-        time.sleep_ms(int(hold_ms))
-
-        self.turn_off()
-
-    # Move a single dot across the strip
-    def test_chase_dot(self, red=255, green=0, blue=0, delay_ms=30, loops=2):
-
-        for loop_index in range(int(loops)):
-            for pixel_index in range(self.led_count):
-
-                self.turn_off()
-                self.set_pixel(pixel_index, red, green, blue)
-                self.show()
-                time.sleep_ms(int(delay_ms))
-
-        self.turn_off()
-
-    # Sweep brightness up and down (still clamped by MAX_BRIGHTNESS)
-    def test_brightness_sweep(self, red=255, green=255, blue=255, step=0.05, delay_ms=70):
-
-        original_brightness = self.brightness
-
-        brightness_value = 0.0
-        while brightness_value <= 1.0:
-            self.set_brightness(brightness_value)
-            self.fill(red, green, blue)
-            time.sleep_ms(int(delay_ms))
-            brightness_value += float(step)
-
-        brightness_value = 1.0
-        while brightness_value >= 0.0:
-            self.set_brightness(brightness_value)
-            self.fill(red, green, blue)
-            time.sleep_ms(int(delay_ms))
-            brightness_value -= float(step)
-
-        self.set_brightness(original_brightness)
-        self.turn_off()
+        except asyncio.CancelledError:
+            # Clean up and signal the task was properly cancelled
+            self.turn_off()
+            raise

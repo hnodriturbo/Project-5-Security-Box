@@ -1,196 +1,118 @@
-# =============================
-# file: setup_wifi_and_time.py
-# =============================
-# Purpose:
-# - Handle WiFi connection ONLY.
-# - Sync NTP time.
-# - Completely separate from MQTT logic.
-# - Recover from ESP32 "Wifi Internal State Error".
-#
-# Notes:
-# - This file is synchronous (do NOT await it).
-# - Safe reset logic included for unstable WiFi states.
+# esp32/setup_wifi_and_time.py
+"""
+WiFi connection and NTP time sync helper.
+
+Tries the school network first, then the home network.
+Displays status on the OLED if one is provided.
+
+Usage (called from main.py BEFORE starting the asyncio event loop):
+    from setup_wifi_and_time import setup_wifi_and_time
+    setup_wifi_and_time(oled=oled_instance)
+
+Notes:
+    - Fully synchronous — WiFi connect uses blocking sleep() internally.
+    - Must run before asyncio.run() because the WiFi stack is not async.
+    - oled parameter is optional; pass None to skip display updates.
+"""
 
 import network
 import ntptime
 import time
 import machine
-import gc
+from machine import RTC
 
 
-# ------------------------------------------------------------
-# OLED helper (optional)
-# ------------------------------------------------------------
-def show_status(oled, line1, line2="", line3=""):
-    if oled is None:
-        return
-
-    if hasattr(oled, "show_status"):
-        oled.show_status(line1, line2, line3)
-        return
-
-    if hasattr(oled, "show_three_lines"):
-        oled.show_three_lines(line1, line2, line3)
-        return
+# Networks to try in order — first match wins
+WIFI_NETWORKS = [
+    ("TskoliVESM",  "Fallegurhestur"),   # School network (preferred)
+    ("Hringdu-jSy6", "FmdzuC4n"),         # Home network (fallback)
+]
 
 
-# ------------------------------------------------------------
-# Force reset WiFi stack (fixes internal state error)
-# ------------------------------------------------------------
-def reset_wifi_stack(wlan, oled=None):
-    show_status(oled, "WIFI", "Resetting...", "")
-
-    try:
-        wlan.disconnect()
-    except Exception:
-        pass
-
-    try:
-        wlan.active(False)
-    except Exception:
-        pass
-
-    time.sleep(1)
-    gc.collect()
-
-    try:
-        wlan.active(True)
-    except Exception:
-        pass
-
-    time.sleep(1)
-    gc.collect()
-
-
-# ------------------------------------------------------------
-# Connect to one WiFi network safely
-# ------------------------------------------------------------
 def connect_wifi(ssid, password, oled=None, attempts=10):
+    """
+    Try to connect to one WiFi network.
 
+    Args:
+        ssid:     Network name
+        password: Network password
+        oled:     Optional OledScreen instance for status display
+        attempts: How many 1-second retries before giving up
+
+    Returns:
+        ssid string if connected, None if failed
+    """
     wlan = network.WLAN(network.STA_IF)
     wlan.active(True)
+    wlan.disconnect()   # Clear any stale connection
 
-    if wlan.isconnected():
-        wlan.disconnect()
+    print("WiFi: trying", ssid)
+    if oled:
+        oled.show_status("WIFI", "Connecting...", ssid[:12])
+
+    wlan.connect(ssid, password)
+
+    for _ in range(attempts):
+        if wlan.isconnected() and wlan.config('essid') == ssid:
+            ip = wlan.ifconfig()[0]
+            print("WiFi: connected to", ssid, "IP:", ip)
+            if oled:
+                oled.show_status("WIFI OK", ssid[:12], ip)
+            return ssid
         time.sleep(1)
 
-    show_status(oled, "WIFI", "Connecting...", ssid)
-    print("WiFi connecting:", ssid)
-
-    for attempt_index in range(int(attempts)):
-
-        try:
-            wlan.connect(ssid, password)
-        except OSError as error:
-            print("WiFi connect OSError:", error)
-            reset_wifi_stack(wlan, oled=oled)
-            continue
-
-        time.sleep(1)
-
-        if wlan.isconnected() and wlan.config("essid") == ssid:
-            ip_info = wlan.ifconfig()
-            show_status(oled, "WIFI OK", ssid, ip_info[0])
-            print("WiFi connected:", ssid, ip_info)
-            return {
-                "wifi_ok": True,
-                "ssid": ssid,
-                "ip_info": ip_info,
-                "wlan": wlan,
-            }
-
-        print("WiFi attempt", attempt_index + 1, "failed for", ssid)
-
-    show_status(oled, "WIFI FAIL", ssid, "Trying next")
-    print("WiFi failed:", ssid)
-
-    return {
-        "wifi_ok": False,
-        "ssid": None,
-        "wifi_pw": None,
-        "ip_info": None,
-        "wlan": wlan,
-    }
+    print("WiFi: failed to connect to", ssid)
+    return None
 
 
-# ------------------------------------------------------------
-# Sync time using NTP
-# ------------------------------------------------------------
 def sync_time(oled=None):
-
-    show_status(oled, "TIME", "Syncing NTP...", "")
-    print("NTP syncing...")
-
+    """Sync RTC with NTP. Silently continues if sync fails (no internet)."""
     try:
+        if oled:
+            oled.show_status("NTP", "Syncing time...", "")
         ntptime.settime()
-        show_status(oled, "TIME OK", "NTP synced", "")
-        print("NTP synced")
-        return True
-    except Exception as error:
-        show_status(oled, "TIME FAIL", "NTP error", "")
-        print("NTP error:", error)
-        return False
+        print("Time: NTP sync OK")
+    except Exception as e:
+        print("Time: NTP sync failed:", e)
+        if oled:
+            oled.show_status("NTP", "Sync failed", "using RTC")
 
 
-# ------------------------------------------------------------
-# Read RTC time and return readable string
-# ------------------------------------------------------------
 def get_time_text():
-    rtc = machine.RTC()
-    current_time = rtc.datetime()
-
-    year = current_time[0]
-    month = current_time[1]
-    day = current_time[2]
-    hour = current_time[4]
-    minute = current_time[5]
-    second = current_time[6]
-
-    return "{}-{}-{} {:02d}:{:02d}:{:02d}".format(
-        year, month, day, hour, minute, second
+    """Return current RTC time as a formatted string (for OLED / log lines)."""
+    t = machine.RTC().datetime()
+    return "{:04d}-{:02d}-{:02d} {:02d}:{:02d}:{:02d}".format(
+        t[0], t[1], t[2], t[4], t[5], t[6]
     )
 
 
-# ------------------------------------------------------------
-# Main entry point
-# ------------------------------------------------------------
 def setup_wifi_and_time(oled=None):
+    """
+    Connect to WiFi and sync NTP time. Shows status on OLED if provided.
 
-    wifi_networks = [
-        ("TskoliVESM", "Fallegurhestur"),
-        ("Hringdu-jSy6", "FmdzuC4n"),
-    ]
+    Tries WIFI_NETWORKS in order until one succeeds. NTP sync runs after
+    a successful connection. Continues without a connection if all networks
+    fail (offline mode — MQTT will reconnect later via its own retry loop).
 
-    result = None
+    Args:
+        oled: Optional OledScreen instance. Pass None during unit tests
+              or when no display is attached.
+    """
+    connected_ssid = None
 
-    for ssid, password in wifi_networks:
-        result = connect_wifi(ssid, password, oled=oled, attempts=10)
-        if result["wifi_ok"]:
+    for ssid, pwd in WIFI_NETWORKS:
+        connected_ssid = connect_wifi(ssid, pwd, oled=oled)
+        if connected_ssid:
             break
 
-    if not result or not result["wifi_ok"]:
-        show_status(oled, "WIFI", "No connection", "")
-        print("No WiFi connection")
-
-        return {
-            "wifi_ok": False,
-            "ssid": None,
-            "ip_info": None,
-            "time_ok": False,
-            "time_text": None,
-        }
-
-    time_ok = sync_time(oled=oled)
-    time_text = get_time_text()
-
-    show_status(oled, "READY", result["ssid"], time_text)
-    print("RTC time:", time_text)
-
-    return {
-        "wifi_ok": True,
-        "ssid": result["ssid"],
-        "wifi_pw": result.get("wifi_pw"),
-        "ip_info": result["ip_info"],
-        "time_ok": time_ok,
-        "time_text": time_text,
-    }
+    if connected_ssid:
+        sync_time(oled=oled)
+        ts = get_time_text()
+        print("Boot time:", ts)
+        if oled:
+            oled.show_status("READY", connected_ssid[:12], ts[11:])  # show HH:MM:SS
+    else:
+        print("WiFi: no network found — running offline")
+        if oled:
+            oled.show_status("OFFLINE", "No WiFi", "MQTT will retry")
+        time.sleep(2)   # Let the user read the message before boot continues
