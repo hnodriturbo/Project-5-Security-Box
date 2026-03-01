@@ -7,14 +7,18 @@ Purpose:
   - draw_progress()
   - blink_invert(), marquee(), slide_in_center()
   - animate_progress(), bounce_dot()
+  - Async wrappers: show_status_async(), show_three_lines_async(), clear_async()
+  - screensaver_loop() — runs as a background asyncio task
 
 Notes:
 - Designed for 128x64 OLEDs using SSD1306/SSD1309 SPI driver.
 - Uses the built-in MicroPython 8x8 font for simple layout math.
-- Animations are blocking (time.sleep_ms), intended for short demo effects.
+- Blocking animations (time.sleep_ms) are kept for boot-time demos only.
+- Async wrappers yield to the event loop so other tasks keep running.
 """
 
 import time
+import uasyncio as asyncio
 from machine import Pin, SPI
 from ssd1306.ssd1306 import SSD1306_SPI
 
@@ -39,6 +43,9 @@ class OledScreen:
         # Store display size so layout math never hardcodes 128x64
         self.width = int(width)
         self.height = int(height)
+
+        # Used by screensaver_loop() and mark_activity() to track idle time
+        self.last_activity_utility = asyncio.ticks_ms()
 
         # Store font size used by MicroPython text()
         self.font_width = 8
@@ -77,13 +84,13 @@ class OledScreen:
         self.oled.fill(0)
         self.oled.show()
 
-    def _center_x(self, text):
+    def center_x_utility(self, text):
         # Return X coordinate that centers text horizontally
         text_width_px = len(text) * self.font_width
         x = (self.width - text_width_px) // 2
         return 0 if x < 0 else x
 
-    def _center_y(self, line_count, gap=2):
+    def center_y_utility(self, line_count, gap=2):
         # Return Y coordinate that vertically centers a block of lines
         line_count = int(line_count)
         gap = int(gap)
@@ -102,7 +109,7 @@ class OledScreen:
 
     def draw_center(self, text, y=28, clear_first=False):
         # Draw a single centered line
-        self.draw_text(text, x=self._center_x(text), y=y, clear_first=clear_first)
+        self.draw_text(text, x=self.center_x_utility(text), y=y, clear_first=clear_first)
 
     # -------------------------------------------------------------------
     # Screen layouts used by the project
@@ -118,10 +125,10 @@ class OledScreen:
 
         self.oled.fill(0)
 
-        start_y = self._center_y(len(lines), gap=gap)
+        start_y = self.center_y_utility(len(lines), gap=gap)
         for index, text in enumerate(lines):
             y = start_y + (index * (self.font_height + int(gap)))
-            self.oled.text(text, self._center_x(text), y)
+            self.oled.text(text, self.center_x_utility(text), y)
 
         self.oled.show()
 
@@ -131,10 +138,10 @@ class OledScreen:
 
         self.oled.fill(0)
 
-        start_y = self._center_y(3, gap=gap)
+        start_y = self.center_y_utility(3, gap=gap)
         for index, text in enumerate(lines):
             y = start_y + (index * (self.font_height + int(gap)))
-            self.oled.text(text, self._center_x(text), y)
+            self.oled.text(text, self.center_x_utility(text), y)
 
         self.oled.show()
 
@@ -199,7 +206,7 @@ class OledScreen:
         speed_ms = int(speed_ms)
 
         if y is None:
-            y = self._center_y(1)
+            y = self.center_y_utility(1)
 
         text_width = len(text) * self.font_width
 
@@ -215,9 +222,9 @@ class OledScreen:
         speed_ms = int(speed_ms)
 
         if y is None:
-            y = self._center_y(1)
+            y = self.center_y_utility(1)
 
-        target_x = self._center_x(text)
+        target_x = self.center_x_utility(text)
 
         for x in range(self.width, target_x - 1, -1):
             self.oled.fill(0)
@@ -245,3 +252,62 @@ class OledScreen:
                 self.oled.fill_rect(x, y, dot_size, dot_size, 1)
                 self.oled.show()
                 time.sleep_ms(speed_ms)
+
+    # -------------------------------------------------------------------
+    # Async wrappers — use these from asyncio tasks (controller, etc.)
+    # -------------------------------------------------------------------
+
+    async def show_status_async(self, title, line1="", line2=""):
+        """Call show_status() then yield so other tasks keep running."""
+        self.show_status(title, line1, line2)
+        await asyncio.sleep_ms(0)
+
+    async def show_three_lines_async(self, line1, line2, line3):
+        """Call show_three_lines() then yield."""
+        self.show_three_lines(line1, line2, line3)
+        await asyncio.sleep_ms(0)
+
+    async def clear_async(self):
+        """Call clear() then yield."""
+        self.clear()
+        await asyncio.sleep_ms(0)
+
+    def mark_activity(self):
+        """
+        Reset the idle timer. Call this whenever something happens on the box
+        (RFID scan, remote command, etc.) to prevent the screensaver from
+        activating during active use.
+        """
+        self.last_activity_utility = asyncio.ticks_ms()
+
+    async def screensaver_loop(self, idle_ms=60000):
+        """
+        Run forever as a background asyncio task.
+
+        After idle_ms milliseconds of inactivity (no mark_activity() call),
+        shows a static "SECURITY BOX READY" screen.
+        Returns to normal as soon as mark_activity() is called by the controller.
+
+        Notes:
+            - Checks every 500ms — low CPU cost.
+            - Does NOT override show_status_async() calls; it only sets
+              a flag. The controller always calls mark_activity() before
+              any real event, which resets the timer and suppresses the
+              screensaver for the duration of the event.
+        """
+        screensaver_active = False
+
+        while True:
+            elapsed = asyncio.ticks_diff(asyncio.ticks_ms(), self.last_activity_utility)
+
+            if elapsed >= idle_ms and not screensaver_active:
+                # Gone idle — show screensaver
+                screensaver_active = True
+                self.show_status("SECURITY", "BOX", "READY")
+
+            elif elapsed < idle_ms and screensaver_active:
+                # Activity resumed — clear screensaver flag
+                # Controller will write the correct state on the next event
+                screensaver_active = False
+
+            await asyncio.sleep_ms(500)

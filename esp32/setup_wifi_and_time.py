@@ -1,3 +1,20 @@
+# esp32/setup_wifi_and_time.py
+"""
+WiFi connection and NTP time sync helper.
+
+Tries the school network first, then the home network.
+Displays status on the OLED if one is provided.
+
+Usage (called from main.py BEFORE starting the asyncio event loop):
+    from setup_wifi_and_time import setup_wifi_and_time
+    setup_wifi_and_time(oled=oled_instance)
+
+Notes:
+    - Fully synchronous — WiFi connect uses blocking sleep() internally.
+    - Must run before asyncio.run() because the WiFi stack is not async.
+    - oled parameter is optional; pass None to skip display updates.
+"""
+
 import network
 import ntptime
 import time
@@ -5,73 +22,97 @@ import machine
 from machine import RTC
 
 
+# Networks to try in order — first match wins
+WIFI_NETWORKS = [
+    ("TskoliVESM",  "Fallegurhestur"),   # School network (preferred)
+    ("Hringdu-jSy6", "FmdzuC4n"),         # Home network (fallback)
+]
 
-# Tengist Wi-Fi með SSID og lykilorði
-def connect_wifi(ssid, password):
-    wlan = network.WLAN(network.STA_IF) 
-    wlan.active(True) # Kveikjum a wlan
-    wlan.disconnect()  # Tryggir að eldri tenging er ekki til staðar
-    print(f"Tenging við Wi-Fi netið: {ssid}...")
+
+def connect_wifi(ssid, password, oled=None, attempts=10):
+    """
+    Try to connect to one WiFi network.
+
+    Args:
+        ssid:     Network name
+        password: Network password
+        oled:     Optional OledScreen instance for status display
+        attempts: How many 1-second retries before giving up
+
+    Returns:
+        ssid string if connected, None if failed
+    """
+    wlan = network.WLAN(network.STA_IF)
+    wlan.active(True)
+    wlan.disconnect()   # Clear any stale connection
+
+    print("WiFi: trying", ssid)
+    if oled:
+        oled.show_status("WIFI", "Connecting...", ssid[:12])
 
     wlan.connect(ssid, password)
-    for _ in range(10):  # Reynir að tengjast í 10 sekúndur
+
+    for _ in range(attempts):
         if wlan.isconnected() and wlan.config('essid') == ssid:
-            print(f"Tengdur við Wi-Fi: {ssid}")
-            print("Nettenging:", wlan.ifconfig())
-            return ssid  # Skilar SSID ef tengist vel
-        time.sleep(1)  # Bíður í sekúndu milli tilrauna
+            ip = wlan.ifconfig()[0]
+            print("WiFi: connected to", ssid, "IP:", ip)
+            if oled:
+                oled.show_status("WIFI OK", ssid[:12], ip)
+            return ssid
+        time.sleep(1)
 
-    print(f"Mistókst að tengjast Wi-Fi netinu: {ssid}")
-    return None  # Skilar None ef tenging mistókst
+    print("WiFi: failed to connect to", ssid)
+    return None
 
 
-
-# Samstillir tíma með NTP
-def sync_time():
+def sync_time(oled=None):
+    """Sync RTC with NTP. Silently continues if sync fails (no internet)."""
     try:
-        ntptime.settime()  # Synca við ntp server
-        print("Time synchronized")
-    except:
-        print("Error synchronizing time")
+        if oled:
+            oled.show_status("NTP", "Syncing time...", "")
+        ntptime.settime()
+        print("Time: NTP sync OK")
+    except Exception as e:
+        print("Time: NTP sync failed:", e)
+        if oled:
+            oled.show_status("NTP", "Sync failed", "using RTC")
 
 
-# Yfirfæra tímann yfir á lesanlegra form
-def get_time():
-    rtc = machine.RTC()
-    current_time = (
-        rtc.datetime()
-    )  # Ná i tímann í (ár, mánuður, dagur, klst, mínóta, sekónta) formatti
-    print(f"Klukkan í ESP32 hefur verið stillt á réttan tíma")
-    print(f"Klukkan er: {current_time[0]}-{current_time[1]}-{current_time[2]} {current_time[4]}:{current_time[5]}:{current_time[6]}")
-    
+def get_time_text():
+    """Return current RTC time as a formatted string (for OLED / log lines)."""
+    t = machine.RTC().datetime()
+    return "{:04d}-{:02d}-{:02d} {:02d}:{:02d}:{:02d}".format(
+        t[0], t[1], t[2], t[4], t[5], t[6]
+    )
 
 
-# Tengjast WiFi - Stilla Tíma - Prenta Tíma
-def setup_wifi_and_time():
+def setup_wifi_and_time(oled=None):
     """
-    Reynir fyrst að tengjast við skólanetið (TskoliVESM).
-    Ef það tekst ekki, tengist það við heimilið (Hringdu).
-    """
-    
-    # Listi með tveimur tuples
-    wifi_networks = [ ("Hringdu-jSy6", "FmdzuC4n"), ("TskoliVESM", "Fallegurhestur")]
-    
-    connected_ssid = None  # Gera tóma breytu fyrir netið
+    Connect to WiFi and sync NTP time. Shows status on OLED if provided.
 
-    # Nota svo for lúppu til að tengjast wifi úr listanum (bara til að það reyni bæði)
-    for ssid, pwd in wifi_networks:
-        connected_ssid = connect_wifi(ssid, pwd)
-        if connected_ssid:  # If connected successfully, stop trying
+    Tries WIFI_NETWORKS in order until one succeeds. NTP sync runs after
+    a successful connection. Continues without a connection if all networks
+    fail (offline mode — MQTT will reconnect later via its own retry loop).
+
+    Args:
+        oled: Optional OledScreen instance. Pass None during unit tests
+              or when no display is attached.
+    """
+    connected_ssid = None
+
+    for ssid, pwd in WIFI_NETWORKS:
+        connected_ssid = connect_wifi(ssid, pwd, oled=oled)
+        if connected_ssid:
             break
 
-    # Athugar hvort tenging tókst
     if connected_ssid:
-        print(f"Tengdur við netið {connected_ssid} í Verksmiðja" if connected_ssid == "TskoliVESM" 
-              else f"Tengdur við heimilisnetið {connected_ssid}")
-
-        # Samstillir tíma með NTP og birtir núverandi tíma
-        sync_time()
-        get_time()
+        sync_time(oled=oled)
+        ts = get_time_text()
+        print("Boot time:", ts)
+        if oled:
+            oled.show_status("READY", connected_ssid[:12], ts[11:])  # show HH:MM:SS
     else:
-        print("Ekki tókst að tengjast neinu Wi-Fi.")
-
+        print("WiFi: no network found — running offline")
+        if oled:
+            oled.show_status("OFFLINE", "No WiFi", "MQTT will retry")
+        time.sleep(2)   # Let the user read the message before boot continues
