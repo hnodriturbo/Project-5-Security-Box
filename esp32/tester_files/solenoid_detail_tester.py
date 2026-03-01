@@ -20,7 +20,7 @@ How it behaves:
 from machine import Pin
 import time
 import sys
-
+sys.path.append("..")
 # ---------- PIN SETUP ----------
 AIN1_PIN = 12  # Control pin from ESP32 -> TB6612 AIN1
 

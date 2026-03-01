@@ -77,13 +77,20 @@ class SolenoidTB6612:
         if self.ain2_pin is not None:
             self.ain2_pin.value(0 if self.active_high else 1)
 
-    # Pulse the solenoid for a short duration and then cooldown
-    async def pulse(self, duration_ms=220, cooldown_ms=200):
-        duration_ms = int(duration_ms)
-        cooldown_ms = int(cooldown_ms)
+    # Open solenoid for 5 seconds and then turn it off
+    async def pulse(self):
+        """
+        Unlock the drawer for a fixed 5 seconds.
+
+        Behavior:
+        - Solenoid turns ON immediately
+        - Stays energized for 5000 ms
+        - Turns OFF automatically
+        - Does not block other async tasks
+        """
+
+        open_duration_ms = 5000  # Fixed unlock window
 
         self.on()
-        await asyncio.sleep_ms(duration_ms)
-
+        await asyncio.sleep_ms(open_duration_ms)
         self.off()
-        await asyncio.sleep_ms(cooldown_ms)

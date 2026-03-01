@@ -1,256 +1,290 @@
-"""
-tasks.py - Security Box demo task runner
+# =============================
+# file: tasks.py
+# =============================
+# Purpose:
+# - Coordinate OLED UI, RFID scanning, solenoid pulse, and MQTT reporting.
+# - Keep the device usable even if MQTT is offline.
+# - Keep reed switch support in the file, but do not depend on it (can be enabled later).
+#
+# Behavior:
+# - On boot: show CONNECTING WIFI / MQTT
+# - Wait up to BOOT_MQTT_WAIT_MS for MQTT to connect
+# - If it connects: show MQTT CONNECTED then show ENTER PIN / OR / SCAN CARD
+# - If it does not connect: show MQTT OFFLINE then still show ENTER PIN / OR / SCAN CARD
 
-Purpose:
-- Connect WiFi and sync RTC time (NTP) using setup_wifi_and_time.py
-- Start OLED and show a short boot sequence
-- Show a persistent user prompt: Enter PIN / or / Scan card
-- Listen for RFID allowed/denied events (callbacks)
-- Pulse solenoid on allowed scan
-- Reed switch confirmation logic is prepared but disabled (box not assembled yet)
-
-Notes:
-- This file is intended to be imported and started by main.py on boot.
-- Uses a simple "latest event + sequence number" pattern to safely move data
-  from RFID callbacks into the async main loop.
-"""
-
-import time
 import uasyncio as asyncio
 
-from setup_wifi_and_time import setup_wifi_and_time
 
-from classes.oled_screen_class import OledScreen
-from classes.rfid_class import RFIDClass, DEFAULT_WHITELIST_HEX, DEFAULT_ALLOW_PREFIXES_HEX
-from classes.solenoid_class import SolenoidTB6612
-from classes.reed_switch_class import ReedSwitch
-# from classes.led_class import LedClass   # LED strip not connected yet
+BOOT_MQTT_WAIT_MS = 8000
 
 
-# -------------------------------------------------------------------
-# Module state (shared between RFID callbacks and async main loop)
-# -------------------------------------------------------------------
-
-# Latest RFID event (allowed/denied + uid + label + timestamp)
-lastRfidEvent = None
-
-# Monotonic sequence number used to detect "new event arrived"
-rfidEventSequenceNumber = 0
+def looks_like_coroutine(value):
+    # Purpose: detect coroutine objects safely (prevents int(generator) mistakes)
+    return (value is not None) and hasattr(value, "send")
 
 
-# -------------------------------------------------------------------
-# Time helpers
-# -------------------------------------------------------------------
+class SecurityBoxController:
+    def __init__(
+        self,
+        *,
+        oled,
+        rfid,
+        solenoid,
+        mqtt_broker,
+        led_strip=None,
+        reed_switch=None,
+    ):
+        self.oled = oled
+        self.rfid = rfid
+        self.solenoid = solenoid
+        self.led_strip = led_strip
+        self.reed_switch = reed_switch
+        self.mqtt_broker = mqtt_broker
 
-def buildTimestampString():
-    """
-    Return a readable RTC timestamp after NTP sync.
+        self.is_unlock_running = False
 
-    Format:
-    - YYYY-MM-DD HH:MM:SS
+        self.allowed_remote_calls = {
+            "oled": {
+                "set_screensaver",
+                "mark_activity",
+                "clear",
+                "show_status",
+                "show_three_lines",
+                "clear_async",
+                "show_status_async",
+                "show_three_lines_async",
+                "blink_invert_async",
+                "marquee_async",
+            },
+            "led_strip": {}
+        }
 
-    Notes:
-    - Uses time.localtime() so it matches the RTC after setup_wifi_and_time().
-    """
-    currentTime = time.localtime()
-    return "{:04d}-{:02d}-{:02d} {:02d}:{:02d}:{:02d}".format(
-        currentTime[0], currentTime[1], currentTime[2],
-        currentTime[3], currentTime[4], currentTime[5],
-    )
+    # ------------------------------------------------------------
+    # Purpose: Start all modules and background tasks
+    # ------------------------------------------------------------
+    def start(self):
+        # Link RFID callbacks into this controller
+        self.rfid.on_allowed = self.on_rfid_allowed
+        self.rfid.on_denied = self.on_rfid_denied
 
+        # Start UI and RFID scanning
+        self.oled.start_screensaver()
+        self.rfid.start()
 
-# -------------------------------------------------------------------
-# RFID event helpers
-# -------------------------------------------------------------------
+        # Start MQTT loop and route commands to this controller
+        self.mqtt_broker.set_command_handler(self.handle_mqtt_command)
+        self.mqtt_broker.start()
 
-def buildRfidEventCopy(isAllowed, event):
-    """
-    Create a safe event copy with added fields.
+        # Boot UI flow always runs
+        asyncio.create_task(self.boot_status_flow())
 
-    Adds:
-    - allowed: bool
-    - timestamp: string (RTC time)
+        # Watcher fixes: MQTT might connect AFTER the timeout, so update OLED when it finally connects
+        asyncio.create_task(self.mqtt_connected_watcher_loop())
 
-    Notes:
-    - Avoids dict-unpacking (**event) for MicroPython compatibility.
-    """
-    copiedEvent = {}
-    copiedEvent["allowed"] = isAllowed
-    copiedEvent["timestamp"] = buildTimestampString()
+    async def mqtt_connected_watcher_loop(self):
+        # Do nothing if already connected before this starts
+        if self.mqtt_broker.is_connected:
+            return
 
-    if event:
-        for key in event:
-            copiedEvent[key] = event[key]
+        # Wait until MQTT connects at some later point
+        while not self.mqtt_broker.is_connected:
+            await asyncio.sleep_ms(250)
 
-    return copiedEvent
+        # Show a quick confirmation, then return to idle screen
+        await self.oled.show_status_async("MQTT", "CONNECTED", self.mqtt_broker.broker_in_use)
+        await asyncio.sleep_ms(2000)
+        await self.oled.show_three_lines_async("ENTER PIN", "OR", "SCAN CARD")
+        
+        # ------------------------------------------------------------
+        # Reed switch support kept, but disabled for now (per your request)
+        # ------------------------------------------------------------
+        # if self.reed_switch is not None and self.get_reed_reader is not None:
+        #     asyncio.create_task(self.reed_monitor_loop())
 
+    # ------------------------------------------------------------
+    # Purpose: Get a reed read function if available (supports multiple class versions)
+    # - Returns a callable that may be sync OR async
+    # - Returns None if no supported read function exists
+    # ------------------------------------------------------------
+    @property
+    def get_reed_reader(self):
+        if self.reed_switch is None:
+            return None
 
-def onRfidAllowed(event):
-    """
-    RFID callback for allowed tag.
+        # Prefer a stable/debounced method if available (usually async)
+        if hasattr(self.reed_switch, "read_stable"):
+            return self.reed_switch.read_stable
 
-    Behavior:
-    - Stores the latest allowed event
-    - Increments the sequence number so the async loop can react once
-    """
-    global lastRfidEvent, rfidEventSequenceNumber
-    lastRfidEvent = buildRfidEventCopy(True, event)
-    rfidEventSequenceNumber += 1
+        # Fallback to raw read names (usually sync)
+        if hasattr(self.reed_switch, "read_raw"):
+            return self.reed_switch.read_raw
 
+        if hasattr(self.reed_switch, "read_value"):
+            return self.reed_switch.read_value
 
-def onRfidDenied(event):
-    """
-    RFID callback for denied tag.
+        if hasattr(self.reed_switch, "value"):
+            return self.reed_switch.value
 
-    Behavior:
-    - Stores the latest denied event
-    - Increments the sequence number so the async loop can react once
-    """
-    global lastRfidEvent, rfidEventSequenceNumber
-    lastRfidEvent = buildRfidEventCopy(False, event)
-    rfidEventSequenceNumber += 1
+        return None
 
+    # ------------------------------------------------------------
+    # Purpose: Boot screen + MQTT wait with timeout
+    # ------------------------------------------------------------
+    async def boot_status_flow(self):
+        await self.oled.show_three_lines_async("CONNECTING", "WIFI / MQTT", "")
 
-# -------------------------------------------------------------------
-# Main async task runner
-# -------------------------------------------------------------------
+        waited_ms = 0
+        while (not self.mqtt_broker.is_connected) and (waited_ms < BOOT_MQTT_WAIT_MS):
+            await asyncio.sleep_ms(250)
+            waited_ms += 250
 
-async def runSecurityBoxTasks():
-    """
-    Main demo runner.
+        if self.mqtt_broker.is_connected:
+            await self.oled.show_status_async("MQTT", "CONNECTED", self.mqtt_broker.broker_in_use)
+            await asyncio.sleep_ms(700)
+        else:
+            await self.oled.show_status_async("MQTT", "OFFLINE", "LOCAL MODE")
+            await asyncio.sleep_ms(900)
 
-    Flow:
-    - WiFi + NTP time sync
-    - OLED boot screens
-    - Start RFID scanning
-    - React to new RFID events:
-      - Allowed: show UI + pulse solenoid + show last event time
-      - Denied:  show UI + show last event time
-    """
+        await self.oled.show_three_lines_async("ENTER PIN", "OR", "SCAN CARD")
 
-    # -------------------------------
-    # Boot: WiFi + RTC (NTP)
-    # -------------------------------
-    # This should complete before showing timestamps on OLED.
-    setup_wifi_and_time()
+    # ------------------------------------------------------------
+    # RFID events
+    # ------------------------------------------------------------
+    def on_rfid_allowed(self, payload):
+        asyncio.create_task(self.rfid_allowed_async(payload))
 
-    # -------------------------------
-    # Hardware instances (current phase)
-    # -------------------------------
-    oled = OledScreen()
-    solenoid = SolenoidTB6612()
+    def on_rfid_denied(self, payload):
+        asyncio.create_task(self.rfid_denied_async(payload))
 
-    # Hardware prepared but not used in this phase
-    # reed = ReedSwitch()
-    # leds = LedClass()
+    async def rfid_allowed_async(self, payload):
+        await self.oled.show_status_async("ACCESS", "ALLOWED", payload.get("label", ""))
+        await self.mqtt_broker.publish_event("rfid_allowed", payload)
+        await self.unlock_sequence_async(reason="rfid", details=payload)
 
-    # -------------------------------
-    # OLED boot UI
-    # -------------------------------
-    oled.show_status("SECURITY BOX", "Booting...", "")
-    await asyncio.sleep_ms(700)
+    async def rfid_denied_async(self, payload):
+        await self.oled.show_status_async("ACCESS", "DENIED", "")
+        await self.oled.blink_invert_async(times=2, delay_ms=150)
+        await self.mqtt_broker.publish_event("rfid_denied", payload)
 
-    # Main idle prompt screen
-    oled.show_three_lines("Enter PIN", "or", "Scan card")
+        if self.led_strip is not None:
+            self.led_strip.fill(40, 0, 0)
+            await asyncio.sleep_ms(250)
+            self.led_strip.turn_off()
 
-    # -------------------------------
-    # RFID start (scans in background)
-    # -------------------------------
-    rfid = RFIDClass(
-        whitelist_hex=DEFAULT_WHITELIST_HEX,
-        allow_prefixes_hex=DEFAULT_ALLOW_PREFIXES_HEX,
-        on_allowed=onRfidAllowed,
-        on_denied=onRfidDenied,
-    )
-    rfid.start()
+    # ------------------------------------------------------------
+    # Unlock sequence
+    # ------------------------------------------------------------
+    async def unlock_sequence_async(self, reason, details=None):
+        if self.is_unlock_running:
+            await self.mqtt_broker.publish_log("Unlock ignored: already running.", level="warn", source="esp32")
+            return
 
-    # Track what the loop has already handled
-    handledRfidEventSequenceNumber = 0
+        self.is_unlock_running = True
+        await self.mqtt_broker.publish_state("lock", "unlocking", {"reason": reason})
 
-    # -------------------------------
-    # Main loop
-    # -------------------------------
-    while True:
-        global lastRfidEvent, rfidEventSequenceNumber
+        await self.oled.show_status_async("UNLOCK", "OPENING", reason)
 
-        # Only react when a new RFID event arrives
-        hasNewEvent = (
-            lastRfidEvent is not None
-            and rfidEventSequenceNumber != handledRfidEventSequenceNumber
-        )
+        led_task = None
+        if self.led_strip is not None and hasattr(self.led_strip, "flow_five_leds_circular_async"):
+            led_task = asyncio.create_task(self.led_strip.flow_five_leds_circular_async(cycles=3, delay_ms=40))
 
-        if hasNewEvent:
-            handledRfidEventSequenceNumber = rfidEventSequenceNumber
-            event = lastRfidEvent
+        await self.solenoid.pulse()
 
-            # Pull common fields defensively
-            uidHex = event.get("uid_hex", "")
-            label = event.get("label", "")
-            timestamp = event.get("timestamp", "")
+        if led_task is not None:
+            try:
+                await led_task
+            except Exception:
+                pass
 
-            # ---------------------------
-            # Allowed flow
-            # ---------------------------
-            if event.get("allowed"):
+        if self.led_strip is not None:
+            self.led_strip.turn_off()
 
-                # Show allowed message and a short identifier (label preferred)
-                oled.show_status("ACCESS", "GRANTED", label or uidHex[-6:])
-                await asyncio.sleep_ms(400)
+        await self.mqtt_broker.publish_state("lock", "locked", {"reason": "pulse_finished"})
 
-                # Pulse solenoid to release latch
-                oled.show_status("UNLOCK", "Solenoid pulse", "")
-                await solenoid.pulse(duration_ms=500, cooldown_ms=200)
+        self.is_unlock_running = False
+        await self.oled.show_three_lines_async("ENTER PIN", "OR", "SCAN CARD")
 
-                # Reed confirmation logic (enable when box assembled)
-                #
-                # oled.show_status("CHECK", "Waiting reed...", "")
-                # newState = await reed.wait_for_change(timeout_ms=1200, poll_ms=15)
-                # if newState is None:
-                #     oled.show_status("FAULT", "No movement", "")
-                # else:
-                #     oled.show_status("CONFIRMED", "Drawer moved", "")
+    # ------------------------------------------------------------
+    # MQTT command handling
+    # ------------------------------------------------------------
+    def handle_mqtt_command(self, topic, payload):
+        command = payload.get("command")
 
-                # Optional: show event time briefly
-                oled.show_status("LAST EVENT", "Unlocked at", timestamp)
-                await asyncio.sleep_ms(3000)
+        if command == "unlock":
+            return self.handle_unlock_command(payload)
 
-                # Return to idle prompt
-                oled.show_three_lines("Enter PIN", "or", "Scan card")
+        if command == "call":
+            return self.handle_remote_call(payload)
 
-            # ---------------------------
-            # Denied flow
-            # ---------------------------
-            else:
-                oled.show_status("ACCESS", "DENIED", uidHex[-6:] if uidHex else "")
-                await asyncio.sleep_ms(3000)
+        return None
 
-                # Optional: show event time briefly
-                oled.show_status("LAST EVENT", "Denied at", timestamp)
-                await asyncio.sleep_ms(3000)
+    async def handle_unlock_command(self, payload):
+        await self.mqtt_broker.publish_event("remote_unlock_received", payload)
+        await self.unlock_sequence_async(reason="remote", details=payload)
 
-                # Return to idle prompt
-                oled.show_three_lines("Enter PIN", "or", "Scan card")
+    async def handle_remote_call(self, payload):
+        target = payload.get("target")
+        method = payload.get("method")
+        args = payload.get("args", [])
 
-        # Small delay so the loop stays responsive but not CPU-heavy
-        await asyncio.sleep_ms(30)
+        if target not in self.allowed_remote_calls:
+            await self.mqtt_broker.publish_log("Remote call blocked: bad target", level="warn", source="esp32")
+            return
 
+        if method not in self.allowed_remote_calls[target]:
+            await self.mqtt_broker.publish_log("Remote call blocked: bad method", level="warn", source="esp32")
+            return
 
-# -------------------------------------------------------------------
-# Entry point (called by main.py)
-# -------------------------------------------------------------------
+        obj = getattr(self, target, None)
+        if obj is None:
+            return
 
-def main():
-    """
-    Start the async runner.
+        fn = getattr(obj, method, None)
+        if fn is None:
+            return
 
-    Notes:
-    - asyncio.run() owns the event loop.
-    - Keep finally block so a future cleanup hook can be added safely.
-    """
-    try:
-        asyncio.run(runSecurityBoxTasks())
-    finally:
-        pass
+        if isinstance(args, list):
+            result = fn(*args)
+        else:
+            result = fn(args)
 
+        # If a remote call returns a coroutine, await it
+        if looks_like_coroutine(result):
+            await result
 
-main()
+        await self.mqtt_broker.publish_event("remote_call_ok", {"target": target, "method": method})
+
+    # ------------------------------------------------------------
+    # Reed monitor (kept, but currently disabled in start())
+    # Fixes your crash:
+    # - read_stable() is async, so we must await it.
+    # - This function supports both sync and async reed readers.
+    # ------------------------------------------------------------
+    async def reed_monitor_loop(self):
+        reed_reader = self.get_reed_reader
+        if reed_reader is None:
+            return
+
+        # Initial read (sync or async)
+        try:
+            initial = reed_reader()
+            last_value = (await initial) if looks_like_coroutine(initial) else initial
+        except Exception:
+            return
+
+        while True:
+            try:
+                current = reed_reader()
+                current_value = (await current) if looks_like_coroutine(current) else current
+            except Exception:
+                return
+
+            if current_value != last_value:
+                last_value = current_value
+                await self.mqtt_broker.publish_state(
+                    "drawer",
+                    "open" if int(current_value) == 0 else "closed",
+                    {},
+                )
+
+            await asyncio.sleep_ms(200)

@@ -10,7 +10,8 @@ Purpose:
 - Emit scan results using callbacks (on_allowed / on_denied).
 
 Notes:
-- This file does not modify sys.path. Keep your project import path setup in main.py.
+- No leading underscores in any variable or function names.
+- Safe to run alongside OLED screensaver + solenoid pulse + reed monitoring in one uasyncio program.
 - The scan loop avoids repeating events while the same tag stays on the reader.
 """
 
@@ -28,8 +29,19 @@ RFID_MISO_PIN = 6
 RFID_RST_PIN = 7
 RFID_CS_PIN = 4
 
+# Allowed dictionary for card and keychain
+DEFAULT_WHITELIST_HEX = {
+    "C495FC2984": "card",
+    "439A311CF4": "keychain",
+}
+
+# Allow ALL phones (they start with 08 in HEX)
+DEFAULT_ALLOW_PREFIXES_HEX = ["08"]
+
+# -----------------------------
+# Setup RFID reader + scan rules
+# -----------------------------
 class RFIDClass:
-    # Create SPI bus, initialize MFRC522, and optionally auto-start the scan loop
     def __init__(
         self,
         *,
@@ -44,8 +56,7 @@ class RFIDClass:
         whitelist_hex=None,
         on_allowed=None,
         on_denied=None,
-        ):
-
+    ):
         # Store callbacks used by the application layer
         self.on_allowed = on_allowed
         self.on_denied = on_denied
@@ -58,10 +69,10 @@ class RFIDClass:
         self.whitelist_hex = whitelist_hex or {}
 
         # Track last UID to avoid repeated callbacks while a tag stays present
-        self._last_uid_hex = None
+        self.last_uid_hex_internal = None
 
         # Create SPI bus for the RFID reader
-        self._spi = SoftSPI(
+        self.spi_bus = SoftSPI(
             baudrate=int(baudrate),
             polarity=0,
             phase=0,
@@ -69,78 +80,91 @@ class RFIDClass:
             mosi=Pin(int(mosi_pin)),
             miso=Pin(int(miso_pin)),
         )
-        self._spi.init()
+        self.spi_bus.init()
 
         # Create MFRC522 reader instance
-        self._reader = MFRC522(
-            spi=self._spi,
+        self.reader = MFRC522(
+            spi=self.spi_bus,
             gpioRst=int(rst_pin),
             gpioCs=int(cs_pin),
         )
 
-        # Try to auto-start when an event loop is already running
-        self._task = None
+        # Auto-start the scan loop if asyncio is already running
+        self.scan_task = None
         try:
-            self._task = asyncio.create_task(self._scan_loop())
+            self.scan_task = asyncio.create_task(self.scan_loop_internal())
         except RuntimeError:
-            self._task = None
+            self.scan_task = None
 
-    # Start the scan loop after asyncio is running (safe to call multiple times)
+    # -----------------------------
+    # Control scan loop lifecycle
+    # -----------------------------
     def start(self):
-        if self._task is None:
-            self._task = asyncio.create_task(self._scan_loop())
+        # Start the scan loop after asyncio is running (safe to call multiple times)
+        if self.scan_task is None:
+            self.scan_task = asyncio.create_task(self.scan_loop_internal())
 
-    # Stop the scan loop and clear the task handle
     def stop(self):
-        if self._task is not None:
-            self._task.cancel()
-            self._task = None
+        # Stop the scan loop and clear the task handle
+        if self.scan_task is not None:
+            self.scan_task.cancel()
+            self.scan_task = None
 
-    # Decide whether a UID hex string is allowed
+    # -----------------------------
+    # Allow / deny decision helpers
+    # -----------------------------
     def is_allowed(self, uid_hex):
+        # Exact whitelist match
         if uid_hex in self.whitelist_hex:
             return True
 
+        # Prefix allow list (useful for unstable phone UIDs)
         for prefix in self.allow_prefixes_hex:
             if uid_hex.startswith(prefix):
                 return True
 
         return False
 
-    # Return a friendly label for known tags, otherwise empty string
     def label_for(self, uid_hex):
+        # Return a friendly label for known tags, otherwise empty string
         return self.whitelist_hex.get(uid_hex, "")
 
-    # Async scan loop that requests + anticoll, then calls callbacks on change
-    async def _scan_loop(self):
+    # -----------------------------
+    # Main async scan loop
+    # -----------------------------
+    async def scan_loop_internal(self):
+        # Scan forever without blocking other tasks (OLED/solenoid/reed/MQTT)
         while True:
-            (status, _tag_type) = self._reader.request(self._reader.REQIDL)
+            (status, _tag_type) = self.reader.request(self.reader.REQIDL)
 
-            if status == self._reader.OK:
-                (status, uid_bytes) = self._reader.anticoll()
+            if status == self.reader.OK:
+                (status, uid_bytes) = self.reader.anticoll()
 
-                if status == self._reader.OK:
+                if status == self.reader.OK:
                     uid_hex = uid_bytes.hex().upper()
                     uid_int = int.from_bytes(uid_bytes, "big")
 
                     # Skip duplicates until the tag is removed and re-presented
-                    if uid_hex != self._last_uid_hex:
-                        self._last_uid_hex = uid_hex
+                    if uid_hex != self.last_uid_hex_internal:
+                        self.last_uid_hex_internal = uid_hex
 
                         allowed = self.is_allowed(uid_hex)
                         label = self.label_for(uid_hex)
 
-                        # Build a compact event payload for the application layer
+                        # Emit allowed callback
                         if allowed and self.on_allowed:
                             self.on_allowed(
                                 {
                                     "uid_hex": uid_hex,
                                     "uid_int": uid_int,
                                     "label": label,
-                                    "method": "whitelist" if uid_hex in self.whitelist_hex else "prefix",
+                                    "method": "whitelist"
+                                    if uid_hex in self.whitelist_hex
+                                    else "prefix",
                                 }
                             )
 
+                        # Emit denied callback
                         if (not allowed) and self.on_denied:
                             self.on_denied(
                                 {
@@ -152,14 +176,6 @@ class RFIDClass:
 
             else:
                 # Reset last UID so the next tag presence triggers a new event
-                self._last_uid_hex = None
+                self.last_uid_hex_internal = None
 
             await asyncio.sleep_ms(self.scan_delay_ms)
-
-
-DEFAULT_WHITELIST_HEX = {
-    "C495FC2984": "card",
-    "439A311CF4": "keychain",
-}
-
-DEFAULT_ALLOW_PREFIXES_HEX = ["08"]

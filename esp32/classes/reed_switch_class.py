@@ -13,7 +13,7 @@ Notes:
 
 from machine import Pin
 import uasyncio as asyncio
-
+import time
 
 # Default pins (final wiring)
 REED_GPIO = 16
@@ -70,7 +70,7 @@ class ReedSwitch:
     # Wait until reed state changes or timeout occurs
     async def wait_for_change(self, timeout_ms=None, poll_ms=10):
         poll_ms = int(poll_ms)
-        start_time = asyncio.ticks_ms()
+        start_time = time.ticks_ms()
 
         # Establish baseline state before waiting
         baseline = await self.read_stable()
@@ -84,7 +84,7 @@ class ReedSwitch:
 
             # Handle timeout if configured
             if timeout_ms is not None:
-                elapsed = asyncio.ticks_diff(asyncio.ticks_ms(), start_time)
+                elapsed = time.ticks_diff(time.ticks_ms(), start_time)
                 if elapsed >= int(timeout_ms):
                     return None
 
