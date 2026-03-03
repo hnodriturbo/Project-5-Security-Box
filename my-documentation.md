@@ -269,19 +269,8 @@ These will only be confirmed during:
 
 ---
 
-## Future Reports
-
-- ESP32 Integration Phase :
-  - 
-- MQTT Communication Testing :
-  - 
-- NiceGUI Dashboard Integration :
-  - 
-- Fault Handling Validation :
-  - 
-- Final Mechanical Assembly:
-  - 
 - Testing & Performance Results:
   - Testing the solenoid with all connected parts (not inside the box) seems good. Only problem is we need to exclude the springs because the solenoid will not open when friction is pushing on it by the springs pushing the drawer outwards.
+  - SOLENOID DOESNT ALWAYS OPEN !!! NOTE: COULD BE FATAL TO PROJECT FUTURE AVAILABILITY BUT FOR NOW IT WORKS IN BETWEEN WHEN USING BRAND NEW BATTERIES.
 
 ---
