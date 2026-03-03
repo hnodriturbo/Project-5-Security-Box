@@ -64,17 +64,20 @@ ACCESS_CODE = "1404"
 # 0.0.0.0 = listen on all interfaces so any device on the
 # school network can open the dashboard in their browser
 # --------------------------------------------------
+
 # NICEGUI_HOST = "0.0.0.0"
-# NICEGUI_PORT = 8090  # open: http://<pi-ip>:8090   e.g. http://10.201.48.7:8090
+# NICEGUI_PORT = 8090
+# # open: http://10.201.48.7:8090
+# e.g. http://:8090
+
 # -----------------------------
 # NiceGUI server config
 # -----------------------------
-
-NICEGUI_HOST = os.getenv("NICEGUI_HOST", "127.0.0.1")
+NICEGUI_HOST = "0.0.0.0"
 # Use "0.0.0.0" to open on LAN
 
 # Custom port because Apache/Postgres use the default port
-NICEGUI_PORT = int(os.getenv("NICEGUI_PORT", "8090"))
+NICEGUI_PORT = 8090
 # --------------------------------------------------
 # Event log
 # --------------------------------------------------

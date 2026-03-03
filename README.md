@@ -82,9 +82,8 @@ Communication protocol used:
 - MQTT  
 - JSON  
 
-Broker currently used:
-
-`broker.emqx.io`
+Broker will be used using mosquitto and Raspberry Pi system using the school network
+- Known broker IP: `10.201.48.7` (could be something else next time it powers on)
 
 All communication between ESP32 and Raspberry Pi is handled using structured JSON messages over MQTT.
 
@@ -104,23 +103,23 @@ Handles hardware interaction, MQTT communication, state management, and feedback
 Runs **NiceGUI (Python)**.  
 Provides dashboard interface, remote control functionality, and live monitoring.
 
-Detailed module breakdown will be documented separately.
-
 ---
 
 ## 7. CAD & Mechanical Design
 
 Folder: `cad/`
 
-Contains:
-
-- Final printable box  
-- Sliding drawer  
-- Solenoid mounting structure  
-- Drawer holder mechanism  
-- STL exports  
-
 Designed in Autodesk Fusion.
+
+Contains STL exports for:
+
+- **Main Box Design**
+- **Sliding Drawer Design**
+- **Sliding Drawer Handle Design**
+- **Solenoid Mounting Structure Design**
+- **Spring Holders Design**
+  
+
 
 The design focuses heavily on mechanical precision due to the solenoid having approximately 2mm of usable locking depth.
 
@@ -138,8 +137,8 @@ The design focuses heavily on mechanical precision due to the solenoid having ap
 
 - DFPlayer Mini + speaker for audio feedback  
 - Internal voltage regulation  
-- Improved drawer alignment refinement  
-- Local MQTT broker on Raspberry Pi  
+- Improved drawer alignment refinement ✅ 
+- Local MQTT broker on Raspberry Pi ✅ 
 
 ---
 

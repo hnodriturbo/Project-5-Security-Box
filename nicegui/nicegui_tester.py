@@ -1,3 +1,11 @@
+# How NiceGUI builds a page:
+#   Every ui.X() call inside @ui.page('/') adds a visible element.
+#   Elements are placed top-to-bottom unless wrapped in ui.row().
+#   .classes() adds Tailwind CSS classes — this controls all layout and styling.
+#   with ui.card(): / with ui.column(): etc. create containers —
+#   everything indented inside them is a child of that container.
+#
+
 import time
 import paho.mqtt.client as mqtt
 
