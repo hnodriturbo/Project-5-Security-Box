@@ -1,0 +1,81 @@
+# ==========================================
+# file: config.py  (runs on Raspberry Pi)
+# ==========================================
+#
+# Purpose:
+# - One place to change broker, topics, and server settings.
+# - Imported by mqtt_handler.py and dashboard.py.
+#
+# Since NiceGUI runs ON the Raspberry Pi, and Mosquitto also runs
+# ON the Raspberry Pi, the broker address from the Pi's own perspective
+# is "localhost" — not the LAN IP.
+#
+# The ESP32 connects to 10.201.48.7 (Pi LAN IP).
+# The Pi itself connects to localhost (same machine).
+# Both reach the exact same Mosquitto broker.
+# ==========================================
+import os
+import sys
+import asyncio
+
+# -----------------------------
+# CRITICAL: Set event loop policy JUST before ui.run() on Windows
+# -----------------------------
+if sys.platform.startswith("win"):
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+# --------------------------------------------------
+# MQTT Broker
+# --------------------------------------------------
+
+# ACTIVE BROKER: EMQX public broker for training/testing
+# BROKER_HOST = "broker.emqx.io"
+BROKER_HOST = "192.168.1.51"
+# BROKER_HOST = "127.0.0.1"
+BROKER_PORT = 1883  # standard MQTT port, no TLS, no auth
+
+# --------------------------------------------------
+# RASPBERRY PI BROKER (uncomment when running on Pi)
+# NiceGUI runs on the Pi → use localhost (same machine as Mosquitto)
+# --------------------------------------------------
+# BROKER_HOST = "localhost"  # Pi talks to its own Mosquitto broker
+# BROKER_PORT = 1883
+
+# Fallback for running dashboard on a different machine (e.g. your laptop)
+# BROKER_HOST = "10.201.48.7"   # uncomment if running dashboard off-Pi
+
+# --------------------------------------------------
+# Topics — must match ESP32 box_controller.py exactly
+# Direction:
+#   ESP32  →  publishes to Events    (subscribe here)
+#   ESP32  ←  subscribes to Commands (publish here)
+# --------------------------------------------------
+BASE_TOPIC = "MyTopic"
+TOPIC_EVENTS = "MyTopic/Events"  # we subscribe — receive from ESP32
+TOPIC_COMMANDS = "MyTopic/Commands"  # we publish  — send to ESP32
+
+# --------------------------------------------------
+# Dashboard access code
+# User types this in the top card to unlock all controls
+# --------------------------------------------------
+ACCESS_CODE = "1404"
+
+# --------------------------------------------------
+# NiceGUI server
+# 0.0.0.0 = listen on all interfaces so any device on the
+# school network can open the dashboard in their browser
+# --------------------------------------------------
+# NICEGUI_HOST = "0.0.0.0"
+# NICEGUI_PORT = 8090  # open: http://<pi-ip>:8090   e.g. http://10.201.48.7:8090
+# -----------------------------
+# NiceGUI server config
+# -----------------------------
+
+NICEGUI_HOST = os.getenv("NICEGUI_HOST", "127.0.0.1")
+# Use "0.0.0.0" to open on LAN
+
+# Custom port because Apache/Postgres use the default port
+NICEGUI_PORT = int(os.getenv("NICEGUI_PORT", "8090"))
+# --------------------------------------------------
+# Event log
+# --------------------------------------------------
+MAX_LOG_LINES = 100  # keep last 100 entries in memory

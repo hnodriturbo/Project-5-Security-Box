@@ -20,9 +20,15 @@ REED_GPIO = 16
 
 
 class ReedSwitch:
-
     # Initialize reed input and capture initial baseline state
-    def __init__(self, pin=REED_GPIO, use_pull_up=True, debounce_ms=30, inverted=False):
+    def __init__(
+        self,
+        pin=REED_GPIO,
+        use_pull_up=True,
+        debounce_ms=30,
+        inverted=False
+        ):
+        
         # Select correct pull resistor configuration
         pull_mode = Pin.PULL_UP if use_pull_up else Pin.PULL_DOWN
 
@@ -89,3 +95,59 @@ class ReedSwitch:
                     return None
 
             await asyncio.sleep_ms(poll_ms)
+            
+    def state_label_utility(self, value):
+        # Map digital value to drawer state label (default pull-up wiring: 0=closed, 1=open)
+        return "open" if int(value) == 1 else "closed"
+
+    async def diagnostics_async(self, samples=40, sample_delay_ms=5):
+        """
+        Testing / telemetry snapshot for the controller.
+
+        Returns a dict that is safe to publish over MQTT or show on OLED:
+        - raw_now: current raw pin value
+        - stable_now: current debounced value
+        - seen_0 / seen_1: whether we observed 0/1 during sampling
+        - changed_count: how many times the sample changed
+        - state_label: open/closed label from the stable value
+        - health: "ok" / "no_change_seen" (useful as a warning)
+        """
+        samples = int(samples)
+        sample_delay_ms = int(sample_delay_ms)
+
+        raw_now = self.read_raw()
+        stable_now = await self.read_stable()
+
+        seen_0 = False
+        seen_1 = False
+        changed_count = 0
+
+        last = self.read_raw()
+        for _ in range(samples):
+            current = self.read_raw()
+
+            if current == 0:
+                seen_0 = True
+            else:
+                seen_1 = True
+
+            if current != last:
+                changed_count += 1
+                last = current
+
+            await asyncio.sleep_ms(sample_delay_ms)
+
+        # If we never saw a change, the signal is “stable”.
+        # That can be totally normal (drawer not moving), so treat this as “warning-level info” only.
+        health = "ok" if (changed_count > 0 or (seen_0 and seen_1)) else "no_change_seen"
+
+        return {
+            "reed_gpio": REED_GPIO,
+            "raw_now": int(raw_now),
+            "stable_now": int(stable_now),
+            "state_label": self.state_label_utility(stable_now),
+            "seen_0": bool(seen_0),
+            "seen_1": bool(seen_1),
+            "changed_count": int(changed_count),
+            "health": health,
+        }

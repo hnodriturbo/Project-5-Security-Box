@@ -19,7 +19,7 @@ import uasyncio as asyncio
 # -----------------------------
 SOLENOID_AIN1_PIN = 12
 
-class SolenoidTB6612:
+class Solenoid:
     def __init__(
         self,
         ain1_pin=SOLENOID_AIN1_PIN,
@@ -77,19 +77,18 @@ class SolenoidTB6612:
         if self.ain2_pin is not None:
             self.ain2_pin.value(0 if self.active_high else 1)
 
-    # Open solenoid for 5 seconds and then turn it off
-    async def pulse(self):
+    # Open solenoid for a configurable time and then turn it off
+    async def pulse(self, open_duration_ms=5000):
         """
-        Unlock the drawer for a fixed 5 seconds.
+        Unlock the drawer for a configurable time window.
 
         Behavior:
         - Solenoid turns ON immediately
-        - Stays energized for 5000 ms
+        - Stays energized for open_duration_ms
         - Turns OFF automatically
         - Does not block other async tasks
         """
-
-        open_duration_ms = 5000  # Fixed unlock window
+        open_duration_ms = int(open_duration_ms)  # Unlock window duration
 
         self.on()
         await asyncio.sleep_ms(open_duration_ms)

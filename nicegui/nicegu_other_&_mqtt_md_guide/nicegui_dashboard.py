@@ -386,8 +386,8 @@ app.on_startup(setup_broker)
 # Windows Event Loop Policy
 # -----------------------------
 # CRITICAL: Set event loop policy BEFORE ui.run() on Windows
-if sys.platform.startswith("win"):
-    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+# if sys.platform.startswith("win"):
+#    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 
 # -----------------------------

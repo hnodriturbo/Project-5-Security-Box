@@ -41,7 +41,7 @@ DEFAULT_ALLOW_PREFIXES_HEX = ["08"]
 # -----------------------------
 # Setup RFID reader + scan rules
 # -----------------------------
-class RFIDClass:
+class RFID:
     def __init__(
         self,
         *,

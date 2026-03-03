@@ -1,153 +1,282 @@
-# esp32/classes/led_strip_class.py
-"""
-NeoPixel LED strip helper for the 50-LED GRB WS2812B strip.
-
-Hardware: GPIO14, 50 LEDs, WS2812B, driven at 3.3V logic (works for most WS2812B).
-
-Usage:
-    from classes.led_strip_class import LedStrip
-    led = LedStrip()
-    led.fill(0, 0, 200)   # blue
-    asyncio.run(led.flow_five_leds_circular_async(cycles=2))
-"""
+# ==========================================
+# file: classes/led_strip_class.py
+# ==========================================
+#
+# Purpose:
+# - Control a WS2812/NeoPixel LED strip (50 LEDs, GPIO14).
+# - Provide sync and async lighting effects.
+# - Provide a toggleable rainbow screensaver that runs as a background task.
+#
+# Key concept — blocking vs non-blocking:
+# - tail_circular()         : BLOCKING — freezes code until done (use at end of a flow)
+# - tail_circular_async()   : NON-BLOCKING — other tasks keep running, await it
+# - blink_color_async()     : NON-BLOCKING — good for quick feedback
+# - start_screensaver()     : starts forever rainbow loop as a background task
+# - stop_screensaver()      : cancels the background task and turns off strip
+#
+# Screensaver:
+# - Smooth hue rotation with a 5-LED tail going around the strip.
+# - Runs forever until stop_screensaver() is called.
+# - Controlled from NiceGUI dashboard via MQTT commands:
+#     {"command": "led_screensaver_on"}
+#     {"command": "led_screensaver_off"}
+# ==========================================
 
 import uasyncio as asyncio
 from machine import Pin
-from neopixel import NeoPixel
-
-
-# Default hardware config — change here if you rewire
-LED_STRIP_PIN      = 14
-LED_COUNT          = 50
-DEFAULT_BRIGHTNESS = 0.15   # 15% — bright enough to see, low enough to not blind
+import neopixel
+import time
 
 
 class LedStrip:
 
-    def __init__(self, pin=LED_STRIP_PIN, led_count=LED_COUNT,
-                 brightness=DEFAULT_BRIGHTNESS, color_order="GRB"):
-        """
-        Set up the NeoPixel strip.
+    MAX_BRIGHTNESS = 0.35   # safety cap — avoids power spikes on USB power
 
-        Args:
-            pin:         GPIO number for the data line
-            led_count:   Total LEDs on the strip
-            brightness:  0.0 to 1.0 scale factor applied before every write
-            color_order: "GRB" (WS2812B default) or "RGB" — controls channel swap
-        """
+    # ------------------------------------------
+    # Init
+    # ------------------------------------------
+    def __init__(self, led_count=50, brightness=0.20, color_order="RGB"):
+        self.data_pin    = 14
         self.led_count   = int(led_count)
         self.color_order = color_order
-        self.brightness_utility = max(0.0, min(1.0, float(brightness)))
 
-        self.neo = NeoPixel(Pin(int(pin), Pin.OUT), self.led_count)
+        # Set brightness safely (clamped inside set_brightness)
+        self.brightness = 0.0
+        self.set_brightness(brightness)
 
-        # Start with all LEDs off
+        # Create NeoPixel driver
+        self.pixels = neopixel.NeoPixel(Pin(self.data_pin, Pin.OUT), self.led_count)
+
+        # Track the screensaver background task so we can cancel it later
+        self.screensaver_task = None
+
+        # Start with strip off
         self.turn_off()
 
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
+    # ------------------------------------------
+    # Brightness helpers
+    # ------------------------------------------
 
-    def scale_utility(self, r, g, b):
-        """Apply brightness and clamp to 0-255. Returns (r, g, b) ints."""
-        br = self.brightness_utility
-        return (
-            int(max(0, min(255, r * br))),
-            int(max(0, min(255, g * br))),
-            int(max(0, min(255, b * br))),
-        )
+    def set_brightness(self, brightness):
+        # Clamp brightness between 0 and MAX_BRIGHTNESS
+        if brightness < 0:
+            brightness = 0
+        if brightness > self.MAX_BRIGHTNESS:
+            brightness = self.MAX_BRIGHTNESS
+        self.brightness = brightness
 
-    def write_pixel_utility(self, index, r, g, b):
-        """
-        Write one pixel into the NeoPixel buffer (no hardware write yet).
-        Handles GRB vs RGB channel order so the caller always uses (r, g, b).
-        """
-        sr, sg, sb = self.scale_utility(r, g, b)
+    def apply_brightness_utility(self, r, g, b):
+        # Scale RGB values by current brightness (0.0 – MAX_BRIGHTNESS)
+        scale = self.brightness
+        return (int(r * scale), int(g * scale), int(b * scale))
+
+    def apply_color_order_utility(self, r, g, b):
+        # Reorder channels based on strip type (WS2812 is usually GRB)
         if self.color_order == "GRB":
-            # WS2812B stores Green in the first byte position
-            self.neo[index] = (sg, sr, sb)
-        else:
-            self.neo[index] = (sr, sg, sb)
+            return (g, r, b)
+        return (r, g, b)   # default RGB
 
-    # ------------------------------------------------------------------
-    # Public sync methods
-    # ------------------------------------------------------------------
+    def set_pixel_utility(self, index, r, g, b):
+        # Set one LED with brightness + color order applied
+        if index < 0 or index >= self.led_count:
+            return
+        r2, g2, b2 = self.apply_brightness_utility(r, g, b)
+        self.pixels[index] = self.apply_color_order_utility(r2, g2, b2)
 
     def show(self):
-        """Push the current pixel buffer to the hardware strip."""
-        self.neo.write()
+        # Push pixel buffer to the physical strip
+        self.pixels.write()
 
-    def turn_off(self):
-        """Turn all LEDs off immediately."""
-        self.neo.fill((0, 0, 0))
-        self.neo.write()
+    # ------------------------------------------
+    # Basic sync actions
+    # ------------------------------------------
 
     def fill(self, r, g, b):
-        """Fill every LED with one color and push to hardware."""
+        # Set all LEDs to one color and update strip immediately
         for i in range(self.led_count):
-            self.write_pixel_utility(i, r, g, b)
-        self.neo.write()
+            self.set_pixel_utility(i, r, g, b)
+        self.show()
 
-    def set_pixel(self, index, r, g, b):
-        """Set one pixel and push immediately."""
-        self.write_pixel_utility(index, r, g, b)
-        self.neo.write()
+    def turn_off(self):
+        # Set all LEDs to black and update strip
+        for i in range(self.led_count):
+            self.pixels[i] = (0, 0, 0)
+        self.show()
 
-    def set_brightness(self, level):
-        """
-        Change the brightness scale (0.0 to 1.0).
-        Does NOT push to hardware — call fill() or show() after to apply visually.
-        """
-        self.brightness_utility = max(0.0, min(1.0, float(level)))
+    # ------------------------------------------
+    # HSV to RGB helper (no math library needed)
+    # Used by the screensaver to produce smooth color transitions
+    #
+    # h = hue 0-359 (color wheel position)
+    # s = saturation 0-255 (255 = full color, 0 = white/grey)
+    # v = value/brightness 0-255 (255 = full brightness)
+    # ------------------------------------------
 
-    # ------------------------------------------------------------------
-    # Async animation
-    # ------------------------------------------------------------------
+    def hsv_to_rgb_utility(self, h, s, v):
+        # Convert HSV color space to RGB — integer math only, no floats
+        if s == 0:
+            return (v, v, v)   # grey when no saturation
 
-    async def flow_five_leds_circular_async(self, r=0, g=0, b=200,
-                                             cycles=3, delay_ms=40):
-        """
-        Animate a 5-LED window that travels around the strip in a circle.
+        h = int(h) % 360
+        s = int(s)
+        v = int(v)
 
-        Why this fixes the hiccup:
-            Each frame ends with 'await asyncio.sleep_ms(delay_ms)'.
-            During that sleep, uasyncio runs all other tasks — RFID scan,
-            OLED updates, MQTT polling. The animation never holds the event
-            loop longer than one neo.write() call (~1-2ms for 50 LEDs).
+        i = h // 60             # which 60-degree sector of the color wheel
+        f = h % 60              # how far into that sector (0-59)
 
-        Args:
-            r, g, b:   Color of the moving window (default: blue)
-            cycles:    How many full rotations before the coroutine returns
-            delay_ms:  Time between frames — 40ms gives ~25 effective fps
+        p = (v * (255 - s)) // 255
+        q = (v * (255 - (s * f) // 60)) // 255
+        t = (v * (255 - (s * (60 - f)) // 60)) // 255
 
-        Notes:
-            - asyncio.CancelledError is caught so the strip turns off cleanly
-              when a new event (RFID, remote cmd) cancels the running task.
-            - Re-raises CancelledError so uasyncio marks the task as cancelled.
-        """
-        window = 5   # number of lit LEDs in the moving tail
-        total_frames = self.led_count * cycles
+        if i == 0: return (v, t, p)
+        if i == 1: return (q, v, p)
+        if i == 2: return (p, v, t)
+        if i == 3: return (p, q, v)
+        if i == 4: return (t, p, v)
+        return (v, p, q)
 
-        try:
-            for frame in range(total_frames):
-                head = frame % self.led_count
+    # ------------------------------------------
+    # Screensaver — rainbow tail loop (background task)
+    #
+    # A 5-LED tail chases around the strip forever.
+    # The color smoothly rotates through the full hue spectrum.
+    # Runs as a background task — does not block anything.
+    # ------------------------------------------
 
-                # Clear the entire buffer before writing the new window
-                for i in range(self.led_count):
-                    self.neo[i] = (0, 0, 0)
+    def start_screensaver(self):
+        # Start the screensaver only if it is not already running
+        if self.screensaver_task is not None:
+            return   # already running, do nothing
 
-                # Write the 5-LED window, wrapping around at the end
-                for offset in range(window):
-                    pixel_index = (head + offset) % self.led_count
-                    self.write_pixel_utility(pixel_index, r, g, b)
+        # create_task() launches the loop in the background and returns immediately
+        self.screensaver_task = asyncio.create_task(self.screensaver_loop_async())
 
-                # Push to hardware — takes ~1-2ms
-                self.neo.write()
+    def stop_screensaver(self):
+        # Cancel the background task and turn off the strip
+        if self.screensaver_task is not None:
+            self.screensaver_task.cancel()
+            self.screensaver_task = None
 
-                # YIELD HERE — this is the critical point that prevents blocking
-                await asyncio.sleep_ms(delay_ms)
+        self.turn_off()
 
-        except asyncio.CancelledError:
-            # Clean up and signal the task was properly cancelled
+    def is_screensaver_running(self):
+        # Returns True if the screensaver loop is currently active
+        return self.screensaver_task is not None
+
+    async def screensaver_loop_async(self):
+        # Rainbow tail chase — runs forever until task is cancelled
+        tail_strength = [255, 140, 70, 35, 15]   # fade from head to tail
+
+        hue  = 0     # current color position on the wheel (0-359)
+        step = 0     # tracks which LED is the head of the tail
+
+        while True:
+            # Clear the strip for this frame
+            for i in range(self.led_count):
+                self.pixels[i] = (0, 0, 0)
+
+            # Get current color from hue — full saturation, half brightness
+            r, g, b = self.hsv_to_rgb_utility(hue, 255, 180)
+
+            # Head position wraps around when it reaches the end of the strip
+            head = step % self.led_count
+
+            # Draw 5 LEDs: head at full strength, fading toward tail
+            for tail_index in range(5):
+                pos = (head - tail_index) % self.led_count
+                s   = tail_strength[tail_index]
+
+                # Scale color by tail fade strength
+                self.set_pixel_utility(
+                    pos,
+                    (r * s) // 255,
+                    (g * s) // 255,
+                    (b * s) // 255,
+                )
+
+            self.show()
+
+            # Advance hue slowly so color changes smoothly over time
+            hue  = (hue + 1) % 360
+            step = (step + 1) % self.led_count
+
+            # yield control — lets MQTT, RFID, and other tasks run between frames
+            await asyncio.sleep_ms(40)
+
+    # ------------------------------------------
+    # Async blink effects (non-blocking)
+    # Use create_task() to fire these without waiting
+    # ------------------------------------------
+
+    async def blink_color_async(self, r, g, b, times=3, on_ms=180, off_ms=180):
+        # Blink a color N times — other tasks keep running during sleeps
+        for _ in range(int(times)):
+            self.fill(r, g, b)
+            await asyncio.sleep_ms(int(on_ms))
             self.turn_off()
-            raise
+            await asyncio.sleep_ms(int(off_ms))
+
+    async def blink_green_three_times_async(self):
+        await self.blink_color_async(0, 255, 0, times=3)
+
+    async def blink_red_three_times_async(self):
+        await self.blink_color_async(255, 0, 0, times=3)
+
+    # ------------------------------------------
+    # Async tail (non-blocking)
+    # Good for sending a tail effect while MQTT/RFID keep running
+    # ------------------------------------------
+
+    async def tail_circular_async(self, cycles=2, delay_ms=40, r=255, g=0, b=0):
+        # Moving tail effect — awaitable, does not block other tasks
+        tail_strength = [255, 140, 70, 35, 15]
+        total_steps   = self.led_count * int(cycles)
+
+        for step in range(total_steps):
+            for i in range(self.led_count):
+                self.pixels[i] = (0, 0, 0)
+
+            head = step % self.led_count
+
+            for tail_index in range(5):
+                pos = (head - tail_index) % self.led_count
+                s   = tail_strength[tail_index]
+                self.set_pixel_utility(pos, (r * s) // 255, (g * s) // 255, (b * s) // 255)
+
+            self.show()
+            await asyncio.sleep_ms(int(delay_ms))
+
+        self.turn_off()
+
+    # ------------------------------------------
+    # Blocking tail (sync)
+    # Intentionally freezes everything — use at the END of a procedure
+    # as a "flow finished" visual cue
+    # ------------------------------------------
+
+    def tail_circular(self, cycles=2, delay_ms=40, r=0, g=0, b=255):
+        # BLOCKING — nothing else runs until this finishes
+        # Only use this at the very end of a procedure on purpose
+        tail_strength = [255, 140, 70, 35, 15]
+        total_steps   = self.led_count * int(cycles)
+
+        for step in range(total_steps):
+            for i in range(self.led_count):
+                self.pixels[i] = (0, 0, 0)
+
+            head = step % self.led_count
+
+            for tail_index in range(5):
+                pos = (head - tail_index) % self.led_count
+                s   = tail_strength[tail_index]
+                self.set_pixel_utility(
+                    pos,
+                    (r * s) // 255,
+                    (g * s) // 255,
+                    (b * s) // 255,
+                )
+
+            self.show()
+            time.sleep_ms(int(delay_ms))
+
+        self.turn_off()
