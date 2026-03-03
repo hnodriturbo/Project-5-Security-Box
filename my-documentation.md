@@ -18,6 +18,123 @@ I will have the box late or on Monday, 2 days before assignment completion so i 
 
 PROBLEM: I thought the pin would have more power but 4xAA is not giving the pin the power to pull in when pressure is on it. Even just a tiny bit of pressure so the spring system will be withdrawed from the design and unlocking will unlock for 5 seconds and user has to manually open the drawer but otherwise it's locked into place by the solenoid. I would need more power then 4xAA batteries for making the pin pull in with force or this is just so basic and small solenoid that I must redesign this. It was not the main purpose but I will have to acumulate to these conditions and create new TRUE PURPOSE of the box by having the user having to open the drawer manually when presented with phone, card, keychain or command from dashboard. I will focus more on the engine design, the lightings and more to make up for this and create fully functional dashboard with NiceGUI that can make many different commands to the box, change screen main texts, change lighting scenes, unlock with a code (code only unlock from dashboard for "security") and more features will also be available in the dashboard.
 
+---
+
+## 27-28 Feb & 1-3 Mar — Printing Issues & Coding Phase
+
+After the first full box print, I immediately ran into mechanical issues. The bottom surface of the box printed uneven, which affected structural alignment and drawer seating. Because of this, the drawer did not fit correctly. I had to manually adjust and widen certain areas using tools just to make it fit temporarily inside the faulty print. This obviously changed tolerances and is not acceptable for final assembly.
+
+As a result:
+
+- The full box is being reprinted and I am currently waiting for the new version.
+- The drawer also needs to be reprinted to restore its true dimensions.
+- These corrected parts will be ready tomorrow, on the day of the deadline.
+- Final mechanical construction and full assembly will happen immediately once the prints are ready.
+
+Because I did not want to lose time while waiting for the reprint, I shifted focus entirely to the coding phase.
+
+---
+
+## ESP32 Software Architecture Development
+
+While waiting for the new box print, I built and structured the entire ESP32 system from scratch. This part was significantly more complex than expected.
+
+The main difficulty was not hardware — it was architecture.
+
+I wanted:
+
+- Separate class files for every hardware component  
+- Clean separation between logic, hardware, and MQTT communication  
+- Two independent MQTT pathways (receive and transmit)  
+- Structured JSON communication  
+- No dynamic guessing or unsafe method calls  
+- Beginner-readable but structured code  
+
+This caused several major debugging cycles.
+
+Problems I faced during development:
+
+- MQTT client queue handling errors  
+- Async task crashes not being retrieved properly  
+- Reconnect loops failing silently  
+- JSON parsing issues  
+- Multiple overlapping log functions that needed to be merged  
+- OLED display not updating because async calls were blocked  
+- Unlock flow timers interfering with display logic  
+- RFID scan loop not running due to incorrect task structure  
+- ESP disconnecting after publish attempts  
+- Attribute errors due to inconsistent broker methods  
+
+The system had to be redesigned more than once to make it clean and understandable.
+
+Eventually, I simplified everything into:
+
+- A central `SecurityBoxController`  
+- Explicit `CommandRouter`  
+- One unified logging system  
+- Minimal JSON messages  
+- Two MQTT topics:  
+  - Subscribe: `1404TOPIC/Commands`  
+  - Publish: `1404TOPIC/Events`  
+- Clear async task separation  
+- Component classes that only do their own job  
+
+After many iterations and structural changes, the ESP32 code is now stable and behaves as expected. HOPEFULLY!
+
+---
+
+## NiceGUI Dashboard & Broker Setup
+
+While developing the ESP32 code, I also completed the NiceGUI dashboard.
+
+I am using my own MQTT broker setup at home.  
+Connection between:
+
+ESP32 ↔ Broker ↔ NiceGUI
+
+is working properly.
+
+The dashboard can:
+
+- Send unlock commands  
+- Trigger LED effects  
+- Change OLED screen text  
+- Display structured events from the ESP  
+- Log events with timestamps  
+- Handle connection and reconnection states  
+
+After a large number of debugging cycles and communication fixes, the full ESP ↔ MQTT ↔ NiceGUI communication loop is functioning correctly.
+
+---
+
+## Current Status Before Final Assembly
+
+At this point:
+
+- Solenoid works electrically - NOTE: SOMETIMES I NEED TO MOVE WIRES OR KNOCK ON THE SOLENOID FOR IT TO WORK - POSSIBLE HUGE PROBLEM !!!
+- MQTT communication is verified  
+- NiceGUI dashboard is fully operational  
+- All component classes are structured and separated  
+- LED strip effects and unlock flow logic completed  
+  
+- Reed switch should block everything that's going on and display on screen DRAWER OPEN until the magnet on the drawer connects the reed switch (then unlock the screen and loop)
+- ESP32 code is stable except for reed sensor testing that is hard to do when not with the printed box and magnet glued on the drawer
+
+Remaining steps:
+
+- Receive corrected box and drawer print  
+- Assemble full hardware  
+- Mount electronics  
+- Perform final mechanical alignment  
+- Validate full unlock + drawer interaction  
+- Record final test results  
+  
+Despite multiple mechanical and coding setbacks, the system is now logically complete and ready for final physical integration. (without reed sensor)
+
+---
+
+# Project information !!!
+
 ### CAD Tool Decision
 
 I chose Autodesk Fusion because it provides:
@@ -43,8 +160,10 @@ Reasoning:
 
 - If tolerances are slightly off after printing, I can reprint only the solenoid mount.
 - Avoids reprinting the entire box structure.
-- Allows micro-adjustments if the 2mm locking engagement needs repositioning.
-
+- Allows micro-adjustments if the 2mm locking engagement needs repositioning
+  
+### Solenoid update 3.3.2026
+- After positioning solenoid in the solenoid 3d printed stand it is exactly like it's supposed to be and fits perfectly even with its 1.7mm locking space inside the side of the drawer. Only check left is to see if it will open when springs on drawer will put light pressure on it (must have full battery power for stronger solenoid signal).
 ---
 
 ### Drawer & Internal Structure Challenges
