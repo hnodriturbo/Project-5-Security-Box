@@ -8,7 +8,7 @@ to the asyncio event loop permanently.
 
 Boot order:
     1. OledScreen  - first, so all following steps can show messages
-    2. LedStrip    - start() shows "LED STRIP STARTED OK", screensaver on
+    2. LedStrip    - start() shows "LED STRIP STARTED OK", idle loop on
     3. Solenoid    - start() shows "SOLENOID STARTED OK"
     4. ReedSwitch  - start() shows real drawer state (OPEN or CLOSED)
     5. RFID        - created but NOT started yet (waits for MQTT)
@@ -18,7 +18,7 @@ Boot order:
     9. show_main_mode() - clear boot messages, show idle screen
 
 The while True loop at the bottom keeps main() alive so all
-background tasks (MQTT receive, LED screensaver, reed polling,
+background tasks (MQTT receive, LED idle loop, reed polling,
 RFID scanning) keep running indefinitely.
 """
 
@@ -34,7 +34,6 @@ from box_procedures        import Procedures
 
 
 async def main():
-
     # --------------------------------------------------
     # Step 1 - OLED
     # Must be first - every following start() uses oled to show boot messages
@@ -43,11 +42,11 @@ async def main():
     oled.start()  # shows "OLED / STARTED / OK" on itself
 
     # Set the text that will be shown when the system is idle and waiting
-    oled.set_screensaver(("READY", "SCAN CARD", ""))
+    oled.set_idle_screen(("READY", "SCAN CARD", ""))
 
     # --------------------------------------------------
     # Step 2 - LED strip
-    # start() shows "LED STRIP / STARTED / OK" for 3s then starts screensaver
+    # start() shows "LED STRIP / STARTED / OK" for 3s then starts idle loop
     # --------------------------------------------------
     led = LedStrip(led_count=50, brightness=0.2, color_order="RGB")
     led.start(oled)
@@ -87,14 +86,23 @@ async def main():
     # wait_connected() pauses here until first connection succeeds
     # --------------------------------------------------
     broker = MqttJsonBroker(
-        wifi_primary    = {"ssid": "Hringdu-jSy6",  "password": "FmdzuC4n"},
-        wifi_fallback   = {"ssid": "TskoliVESM",    "password": "Fallegurhestur"},
-        broker_primary  = "192.168.1.51",
-        broker_fallback = "10.201.48.7",
+        wifi_primary    = {"ssid": "TskoliVESM",    "password": "Fallegurhestur"},
+        wifi_fallback   = {"ssid": "Hringdu-jSy6",  "password": "FmdzuC4n"},
+        broker_primary  = "10.201.48.7",   # Pi on school network - tried first
+        broker_fallback = "192.168.1.51",  # home broker - fallback
         base_topic      = "MyTopic",
     )
+    
+    # Start the broker
     broker.start()
-    await broker.wait_connected()
+    
+    # Broker waits until ready, rechecks every 30 seconds but box state still goes to
+    # normal mode so rfid scanning works even though we don't have connection
+    await broker.wait_ready()
+    
+    # If broker is offline (no networks found) show alternate idle screen
+    if broker.offline:
+        oled.show_three_lines("Net, Broker", "Not Available", "Scan RFID")
 
     # --------------------------------------------------
     # Step 7 - Procedures
@@ -102,6 +110,9 @@ async def main():
     # --------------------------------------------------
     procedures = Procedures(oled, led, solenoid, reed, broker)
 
+    # Uptime heartbeat status updates to dashboard
+    asyncio.create_task(procedures.heartbeat_loop())
+    
     # Wire RFID callbacks - must happen before rfid.start()
     rfid.on_allowed = procedures.on_rfid_allowed
     rfid.on_denied  = procedures.on_rfid_denied

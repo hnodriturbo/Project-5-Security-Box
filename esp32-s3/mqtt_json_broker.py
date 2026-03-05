@@ -72,7 +72,10 @@ class MqttJsonBroker:
 
         # True when connected and ready to publish/receive
         self.connected = False
-
+        
+        # True when no network found - box runs in local-only mode
+        self.offline   = False
+        
         # Wired externally before start() using set_* methods below
         self.command_callback      = None  # fn(dict) called with each incoming JSON command
         self.on_connected_callback = None  # fn() called after each successful MQTT connect
@@ -110,6 +113,12 @@ class MqttJsonBroker:
         # Other background tasks (OLED, LED screensaver) still run during this wait
         while not self.connected:
             await asyncio.sleep_ms(200)
+            
+    async def wait_ready(self):
+        # Unblocks when either connected to broker OR offline mode is confirmed
+        # Replaces wait_connected() - allows main() to proceed without network
+        while not self.connected and not self.offline:
+            await asyncio.sleep_ms(200)
 
     def send_json(self, payload_dict):
         # Publish a Python dict as a JSON string to the Events topic
@@ -130,26 +139,57 @@ class MqttJsonBroker:
     # Repeats forever on any failure - the box must always reconnect
     # ------------------------------------------------------------
 
+    def scan_available(self, ssid):
+        # Scan visible networks and return True if ssid is in range
+        # Avoids wasting 10s connect timeout on a network that isn't there
+        try:
+            networks = self.wlan.scan()
+            return any(n[0].decode() == ssid for n in networks)
+        except Exception:
+            return False
+
     async def run_forever(self):
-        # Outer loop - restarts the whole connection process on any failure
+        # Outer loop - keeps trying forever, 30s between offline retries
         while True:
             try:
-                await self.connect_wifi()
+                connected_wifi = await self.connect_wifi()
+
+                if not connected_wifi:
+                    # No network in range - enter offline mode and retry in 30s
+                    self.offline = True
+                    self.log("OFFLINE", "no network found", "retry in 30s")
+                    await asyncio.sleep_ms(30000)
+                    continue  # skip broker, go back to top and scan again
+
+                # WiFi up - try broker
+                self.offline = False
                 await self.connect_mqtt()
                 await self.receive_loop()
+
             except Exception as error:
                 print("[BROKER] loop error:", error)
 
-            # Mark as disconnected and wait briefly before the next attempt
             self.connected = False
             self.client    = None
             self.log("DISCONNECTED", "retrying soon")
             await asyncio.sleep_ms(800)
 
+
+
     # ------------------------------------------------------------
     # WiFi connection - tries primary then fallback
     # ------------------------------------------------------------
-
+    
+    async def connect_wifi(self):
+        # Returns True if either network connects, False if both unavailable
+        self.wlan.active(True)
+        if await self.try_wifi(self.wifi_primary):
+            return True
+        if await self.try_wifi(self.wifi_fallback):
+            return True
+        return False
+    
+    """
     async def connect_wifi(self):
         # Activate the WiFi radio in station mode
         self.wlan.active(True)
@@ -157,17 +197,28 @@ class MqttJsonBroker:
         # Try the primary network first, fall back if it times out
         if not await self.try_wifi(self.wifi_primary):
             await self.try_wifi(self.wifi_fallback)
-
+    """
+    
     async def try_wifi(self, cfg):
-        # Attempt to connect to one WiFi network, polling for up to 10 seconds
+        # Scan first - skip if SSID not visible (saves 10s timeout)
+        # Resets radio state before connecting to fix internal stuck state
         ssid = cfg.get("ssid", "")
         if not ssid:
             return False
 
+        if not self.scan_available(ssid):
+            self.log("WIFI", "not in range", ssid)
+            return False
+
+        # Reset radio to clear any stuck internal state from previous attempt
+        self.wlan.disconnect()
+        self.wlan.active(False)
+        await asyncio.sleep_ms(300)
+        self.wlan.active(True)
+
         self.log("WIFI", "connecting", ssid)
         self.wlan.connect(ssid, cfg.get("password", ""))
 
-        # Poll every 250ms for up to 10 seconds (40 attempts)
         for _ in range(40):
             if self.wlan.isconnected():
                 self.log("WIFI", "connected", ssid)
@@ -210,8 +261,8 @@ class MqttJsonBroker:
             self.connected = True
 
             self.log("MQTT", "connected", host)
-            self.log("SUB", self.command_topic)
-            self.log("PUB", self.event_topic)
+            self.log("Subscribed to:", self.command_topic)
+            self.log("Publishing to:", self.event_topic)
 
             # Notify main.py so it can return the OLED to idle mode
             if self.on_connected_callback:

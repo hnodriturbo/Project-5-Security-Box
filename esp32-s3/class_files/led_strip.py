@@ -4,28 +4,32 @@ led_strip.py
 WS2812 NeoPixel LED strip controller for the Security Box.
 Controls 50 LEDs on GPIO14 using the MicroPython neopixel driver.
 
-The screensaver is the default idle state - a rainbow tail that chases
-around the strip forever. Every effect (blink, tail) automatically pauses
-the screensaver before running and restores it after, so the screensaver
-is always the fallback visual state without any extra calls from procedures.
+The pixel idle loop is the default idle state - automatically starts
+at boot and resumes after every effect. Two idle animations are
+available and switchable from the dashboard via set_idle_loop().
 
 Role in the box:
-    Visual feedback for all system events. Screensaver shows the box
-    is alive and idle. Effects signal access granted, denied, and
+    Visual feedback for all system events. Idle loop shows the box
+    is alive and waiting. Effects signal access granted, denied, and
     procedure steps. Controlled locally by procedures and remotely
     by JSON commands from the NiceGUI dashboard.
 
 Methods:
-    * start()                  - boot confirmation, starts screensaver
-    * start_screensaver()      - enable and launch rainbow loop
-    * stop_screensaver()       - stop loop and turn strip dark
-    * blink_color_async()      - blink N times with chosen color (non-blocking)
+    * start()                         - boot confirmation, starts idle loop
+    * start_idle_loop()               - enable and launch active idle animation
+    * stop_idle_loop()                - stop loop and turn strip dark
+    * set_idle_loop()                 - switch between idle animations (1 or 2)
+    * pixel_idle_loop_async()         - mode 1: shifting dots, single color per frame
+    * pixel_idle_loop_2_async()       - mode 2: even/odd alternating full rainbow flash
+    * idle_loop_slide_async()         - alt: two-LED rainbow slide around strip
+    * idle_loop_tail_async()          - alt: five-LED rainbow tail chase
+    * blink_color_async()             - blink N times with chosen color (non-blocking)
     * blink_green_three_times_async() - shorthand for access granted blink
     * blink_red_three_times_async()   - shorthand for access denied blink
-    * tail_circular_async()    - async chasing tail effect (non-blocking)
-    * tail_circular()          - blocking tail effect (use at procedure end only)
-    * fill()                   - set all LEDs to one color immediately
-    * turn_off()               - set all LEDs to black immediately
+    * tail_circular_async()           - async chasing tail effect (non-blocking)
+    * tail_circular()                 - blocking tail effect (use at procedure end only)
+    * fill()                          - set all LEDs to one color immediately
+    * turn_off()                      - set all LEDs to black immediately
 """
 
 import uasyncio as asyncio
@@ -54,12 +58,14 @@ class LedStrip:
         self.brightness = 0.0
         self.set_brightness(brightness)
 
-        # screensaver_task holds the running asyncio task so we can cancel it
-        self.screensaver_task    = None
+        # Holds the running asyncio task so we can cancel it when an effect runs
+        self.idle_loop_task = None
 
-        # screensaver_enabled stays True even while an effect is running
-        # so resume_screensaver_utility() knows whether to restart the loop
-        self.screensaver_enabled = False
+        # Stays True even while an effect is running so resume knows to restart
+        self.idle_loop_enabled = False
+
+        # Tracks which idle animation runs - 1 or 2, switchable from dashboard
+        self.idle_loop_mode = 1
 
         # Create the NeoPixel driver for the strip
         self.pixels = neopixel.NeoPixel(Pin(self.data_pin, Pin.OUT), self.led_count)
@@ -68,18 +74,18 @@ class LedStrip:
         self.turn_off()
 
     # ------------------------------------------------------------
-    # Boot confirmation - announces LED strip then starts screensaver
+    # Boot confirmation - announces LED strip then starts idle loop
     # ------------------------------------------------------------
 
     def start(self, oled=None):
         # Print to console and show boot message on OLED for 3 seconds
-        print("[LED] started - screensaver on")
+        print("[LED] started - idle loop on")
         if oled:
             oled.show_three_lines("LED STRIP", "STARTED", "OK")
             time.sleep_ms(3000)
 
-        # Screensaver is the default idle visual - start it right away
-        self.start_screensaver()
+        # Idle loop is the default visual - start it right away
+        self.start_idle_loop()
 
     # ------------------------------------------------------------
     # Brightness helpers - applied to every pixel write
@@ -125,7 +131,7 @@ class LedStrip:
         self.show()
 
     # ------------------------------------------------------------
-    # HSV to RGB conversion - used by screensaver for smooth color rotation
+    # HSV to RGB conversion - used by idle loops for smooth color rotation
     # Pure integer math - no floats, no math module needed
     # h = hue 0-359, s = saturation 0-255, v = brightness 0-255
     # ------------------------------------------------------------
@@ -154,54 +160,137 @@ class LedStrip:
         return     (v, p, q)
 
     # ------------------------------------------------------------
-    # Screensaver - rainbow tail that runs forever as a background task
-    # start_screensaver() and stop_screensaver() control the lifecycle.
-    # pause/resume utilities are used internally by effects.
+    # Idle loop lifecycle - start/stop own the on/off state
+    # pause/resume are used internally by effects so the loop
+    # always comes back automatically after every blink or tail
     # ------------------------------------------------------------
 
-    def start_screensaver(self):
-        # Set enabled flag and launch the loop if it is not already running
-        self.screensaver_enabled = True
-        if self.screensaver_task is None:
-            self.screensaver_task = asyncio.create_task(self.screensaver_loop_async())
+    def start_idle_loop(self):
+        # Set enabled and launch the background task if not already running
+        self.idle_loop_enabled = True
+        if self.idle_loop_task is None:
+            loop_method = self.pixel_idle_loop_async if self.idle_loop_mode == 1 else self.pixel_idle_loop_2_async
+            self.idle_loop_task = asyncio.create_task(loop_method())
 
-    def stop_screensaver(self):
-        # Disable screensaver permanently - effects will NOT restart it after stop
-        self.screensaver_enabled = False
-        if self.screensaver_task is not None:
-            self.screensaver_task.cancel()
-            self.screensaver_task = None
+    def stop_idle_loop(self):
+        # Disable permanently - effects will NOT restart the loop after this
+        self.idle_loop_enabled = False
+        if self.idle_loop_task is not None:
+            self.idle_loop_task.cancel()
+            self.idle_loop_task = None
         self.turn_off()
 
-    def pause_screensaver_utility(self):
-        # Cancel the running task but keep enabled=True so resume can restart it
-        if self.screensaver_task is not None:
-            self.screensaver_task.cancel()
-            self.screensaver_task = None
+    def pause_idle_loop_utility(self):
+        # Cancel the task but keep enabled=True so resume can restart it
+        if self.idle_loop_task is not None:
+            self.idle_loop_task.cancel()
+            self.idle_loop_task = None
 
-    def resume_screensaver_utility(self):
-        # Restart the loop only if screensaver was enabled before the effect ran
-        if self.screensaver_enabled and self.screensaver_task is None:
-            self.screensaver_task = asyncio.create_task(self.screensaver_loop_async())
+    def resume_idle_loop_utility(self):
+        # Restart the loop only if it was enabled before the effect ran
+        if self.idle_loop_enabled and self.idle_loop_task is None:
+            loop_method = self.pixel_idle_loop_async if self.idle_loop_mode == 1 else self.pixel_idle_loop_2_async
+            self.idle_loop_task = asyncio.create_task(loop_method())
 
-    async def screensaver_loop_2_async(self):
-        # Rainbow tail chase - 5 LED tail with fading brightness rotates around strip
-        tail_strength = [255, 140, 70, 35, 15]  # brightness at each tail position
-        hue  = 0   # current color on the wheel (0-359)
-        step = 0   # which LED is currently the head of the tail
+    def set_idle_loop(self, mode):
+        # Switch animation (1 = shifting dots, 2 = even/odd rainbow flash) and restart
+        self.idle_loop_mode = mode
+        self.pause_idle_loop_utility()
+        self.resume_idle_loop_utility()
+
+    # ------------------------------------------------------------
+    # Idle animations - mode 1 and mode 2 are dashboard-switchable
+    # Alt loops below are available but not wired to start/resume
+    # ------------------------------------------------------------
+
+    async def pixel_idle_loop_async(self):
+        # Mode 1 - every other LED lit, offset shifts each frame = circular movement
+        # Single color per frame, hue drifts slowly over full spectrum
+        offset  = 0
+        hue     = 0
+        spacing = 2  # gap between lit LEDs - try 3 for a more open look
 
         while True:
-            # Clear all pixels for this frame
             for i in range(self.led_count):
                 self.pixels[i] = (0, 0, 0)
 
-            # Get the RGB color for the current hue position
-            r, g, b = self.hsv_to_rgb_utility(hue, 255, 180)
+            r, g, b = self.hsv_to_rgb_utility(hue, 255, 200)
 
-            # Head wraps around when it reaches the end of the strip
+            # Light every Nth pixel starting from current offset
+            for i in range(offset, self.led_count, spacing):
+                self.set_pixel_utility(i, r, g, b)
+
+            self.show()
+
+            # Shift offset so lit pixels appear to move by one each frame
+            offset = (offset + 1) % spacing
+            hue    = (hue + 2) % 360
+
+            await asyncio.sleep_ms(60)
+
+    async def pixel_idle_loop_2_async(self):
+        # Mode 2 - alternates between all even and all odd LEDs each frame
+        # Full rainbow spread across lit LEDs, base hue rotates over time
+        hue   = 0
+        frame = 0  # 0 = even LEDs lit, 1 = odd LEDs lit
+
+        while True:
+            for i in range(self.led_count):
+                self.pixels[i] = (0, 0, 0)
+
+            # Each LED gets its own hue offset so the set shows a full rainbow
+            for i in range(self.led_count):
+                if i % 2 == frame:
+                    led_hue = (hue + (i * 360 // self.led_count)) % 360
+                    r, g, b = self.hsv_to_rgb_utility(led_hue, 255, 240)
+                    self.set_pixel_utility(i, r, g, b)
+
+            self.show()
+
+            # Flip between even and odd each frame
+            frame = 1 - frame
+            hue   = (hue + 3) % 360
+
+            await asyncio.sleep_ms(80)
+
+    # ------------------------------------------------------------
+    # Alternative idle animations - swap into start/resume if needed
+    # ------------------------------------------------------------
+
+    async def idle_loop_slide_async(self):
+        # Two-LED rainbow slide - adjacent pair steps one LED at a time around the strip
+        hue  = 0
+        head = 0
+
+        while True:
+            for i in range(self.led_count):
+                self.pixels[i] = (0, 0, 0)
+
+            r, g, b = self.hsv_to_rgb_utility(hue, 255, 200)
+
+            self.set_pixel_utility(head, r, g, b)
+            self.set_pixel_utility((head - 1) % self.led_count, r // 2, g // 2, b // 2)
+
+            self.show()
+
+            head = (head + 1) % self.led_count
+            hue  = (hue + 1) % 360
+
+            await asyncio.sleep_ms(40)
+
+    async def idle_loop_tail_async(self):
+        # Five-LED rainbow tail chase - fading brightness behind the head
+        tail_strength = [255, 140, 70, 35, 15]
+        hue  = 0
+        step = 0
+
+        while True:
+            for i in range(self.led_count):
+                self.pixels[i] = (0, 0, 0)
+
+            r, g, b = self.hsv_to_rgb_utility(hue, 255, 180)
             head = step % self.led_count
 
-            # Draw 5 pixels - head at full strength fading toward the tail
             for t in range(5):
                 pos = (head - t) % self.led_count
                 s   = tail_strength[t]
@@ -209,47 +298,18 @@ class LedStrip:
 
             self.show()
 
-            # Advance hue slowly for smooth color transition over time
             hue  = (hue + 1) % 360
             step = (step + 1) % self.led_count
 
-            # Yield so MQTT, RFID, and reed tasks keep running between frames
             await asyncio.sleep_ms(40)
-            
-    async def screensaver_loop_async(self):
-        # Two-LED rainbow slide - adjacent pair steps one LED at a time around the strip
-        # Head and tail are always neighbors, color rotates through full hue spectrum
-        hue  = 0
-        head = 0  # the leading LED of the pair
 
-        while True:
-            # Clear all LEDs for this frame
-            for i in range(self.led_count):
-                self.pixels[i] = (0, 0, 0)
-
-            # Get current color from hue wheel
-            r, g, b = self.hsv_to_rgb_utility(hue, 255, 200)
-
-            # Draw head at full brightness, tail one step behind at half
-            self.set_pixel_utility(head, r, g, b)
-            self.set_pixel_utility((head - 1) % self.led_count, r // 2, g // 2, b // 2)
-
-            self.show()
-
-            # Step head forward one LED per frame
-            head = (head + 1) % self.led_count
-
-            # Advance hue slowly - full cycle completes after 360 steps
-            hue = (hue + 1) % 360
-
-            await asyncio.sleep_ms(40)
     # ------------------------------------------------------------
-    # Blink effects - non-blocking, auto-pause and resume screensaver
+    # Blink effects - non-blocking, auto-pause and resume idle loop
     # ------------------------------------------------------------
 
     async def blink_color_async(self, r, g, b, times=3, on_ms=180, off_ms=180):
-        # Pause screensaver, blink N times with the given color, then restore
-        self.pause_screensaver_utility()
+        # Pause idle loop, blink N times with the given color, then restore
+        self.pause_idle_loop_utility()
 
         for _ in range(int(times)):
             self.fill(r, g, b)
@@ -257,8 +317,8 @@ class LedStrip:
             self.turn_off()
             await asyncio.sleep_ms(int(off_ms))
 
-        # Restart screensaver only if it was enabled before this blink
-        self.resume_screensaver_utility()
+        # Restart idle loop only if it was enabled before this blink
+        self.resume_idle_loop_utility()
 
     async def blink_green_three_times_async(self):
         # Shorthand for access granted visual feedback
@@ -274,8 +334,8 @@ class LedStrip:
     # ------------------------------------------------------------
 
     async def tail_circular_async(self, cycles=2, delay_ms=40, r=255, g=0, b=0):
-        # Non-blocking tail animation - pauses screensaver during, resumes after
-        self.pause_screensaver_utility()
+        # Non-blocking tail animation - pauses idle loop during, resumes after
+        self.pause_idle_loop_utility()
         tail_strength = [255, 140, 70, 35, 15]
 
         for step in range(self.led_count * int(cycles)):
@@ -292,12 +352,12 @@ class LedStrip:
             await asyncio.sleep_ms(int(delay_ms))
 
         self.turn_off()
-        self.resume_screensaver_utility()
+        self.resume_idle_loop_utility()
 
     def tail_circular(self, cycles=2, delay_ms=40, r=0, g=0, b=255):
         # BLOCKING tail - freezes the event loop intentionally
         # Only use this at the very end of a procedure as a "flow finished" signal
-        self.pause_screensaver_utility()
+        self.pause_idle_loop_utility()
         tail_strength = [255, 140, 70, 35, 15]
 
         for step in range(self.led_count * int(cycles)):
@@ -315,5 +375,5 @@ class LedStrip:
 
         self.turn_off()
 
-        # create_task is safe to call from sync context - restarts screensaver loop
-        self.resume_screensaver_utility()
+        # create_task is safe to call from sync context - restarts idle loop
+        self.resume_idle_loop_utility()

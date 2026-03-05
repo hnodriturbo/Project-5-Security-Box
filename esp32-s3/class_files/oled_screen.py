@@ -16,7 +16,7 @@ Methods:
     * start()            - show boot confirmation on screen
     * show_three_lines() - render 3 centered lines immediately (sync)
     * log_now()          - show lines and pause caller for hold_ms (async)
-    * set_screensaver()  - update the idle screen text
+    * set_idle_screen()  - update the idle screen text
     * show_main_mode()   - return to idle screen immediately
 """
 
@@ -52,9 +52,6 @@ class OledScreen:
         self.font_width  = 8
         self.font_height = 8
 
-        # Default idle screen text - updated via set_screensaver()
-        self.screensaver_lines = ("SECURITY", "BOX", "READY")
-
         # Build the SPI bus - OLED is the only device on this bus
         spi = SPI(
             int(spi_id),
@@ -75,7 +72,10 @@ class OledScreen:
             res = Pin(int(res), Pin.OUT),
             cs  = Pin(int(cs),  Pin.OUT),
         )
-
+        
+        # Default idle screen text - updated via set_idle_screen()
+        self.idle_lines = ("SECURITY", "BOX", "READY")
+        
         # Start with a blank frame so no garbage pixels show at boot
         self.clear()
 
@@ -141,12 +141,12 @@ class OledScreen:
     # ------------------------------------------------------------
     # Idle screen - the text shown when the system is waiting for input
     # ------------------------------------------------------------
-
-    def set_screensaver(self, lines):
-        # Store new idle screen text - shown every time show_main_mode() is called
+    
+    # Store new idle screen text - shown every time show_main_mode() is called
+    def set_idle_screen(self, lines):
         if isinstance(lines, (tuple, list)) and len(lines) >= 3:
-            self.screensaver_lines = (str(lines[0]), str(lines[1]), str(lines[2]))
+            self.idle_lines = (str(lines[0]), str(lines[1]), str(lines[2]))
 
     def show_main_mode(self):
         # Return display to idle screen - called at end of every procedure and callback
-        self.show_three_lines(*self.screensaver_lines)
+        self.show_three_lines(*self.idle_lines)

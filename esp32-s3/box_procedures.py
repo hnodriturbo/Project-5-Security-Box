@@ -48,7 +48,8 @@ class Procedures:
         # Guard flags - prevent two unlocks from overlapping
         self.unlock_in_progress = False
         self.system_locked      = False  # True = silently drop all RFID and commands
-
+        self.drawer_is_open     = False
+        
         # Stored so on_drawer_open() can cancel a running unlock task
         self.active_unlock_task = None
 
@@ -57,6 +58,9 @@ class Procedures:
             self.reed.on_open  = self.on_drawer_open
             self.reed.on_close = self.on_drawer_close
 
+        # record boot time for uptime calculation
+        self.boot_time = time.ticks_ms()
+        
     # ------------------------------------------------------------
     # Helpers - timestamp and publish used throughout all flows
     # ------------------------------------------------------------
@@ -94,16 +98,26 @@ class Procedures:
                 payload["data"] = publish_data
             self.broker.send_json(payload)
 
+    
+    async def heartbeat_loop(self):
+        # Sends system status to dashboard every 30 seconds
+        while True:
+            uptime_s = time.ticks_diff(time.ticks_ms(), self.boot_time) // 1000
+            self.publish({
+                "event":    "heartbeat",
+                "uptime_s": uptime_s,
+                "drawer":   "open" if (self.reed and self.reed.is_open) else "closed",
+                "locked":   not self.unlock_in_progress,
+                "timestamp": self.get_timestamp(),
+            })
+            await asyncio.sleep(60)
+            
     # ------------------------------------------------------------
     # Reed switch callbacks - wired in __init__, called by poll_loop
     # ------------------------------------------------------------
 
     async def on_drawer_open(self):
         print("[REED] drawer OPENED")
-
-        # Cancel unlock countdown if it was running
-        if self.active_unlock_task is not None and not self.active_unlock_task.done():
-            self.active_unlock_task.cancel()
 
         # Solenoid off immediately - no need to keep it energized
         if self.solenoid:
@@ -168,37 +182,33 @@ class Procedures:
             publish_success = False,
         )
 
-        # Blink red in background - screensaver auto-pauses and resumes
+        # Blink red in background - idle loop auto-pauses and resumes
         asyncio.create_task(self.led.blink_color_async(255, 0, 0, times=3))
 
     # ------------------------------------------------------------
     # Unlock procedure - the main flow of the security box
     #
     # Steps:
-    #   1. Guard check - exit if already running
-    #   2. Set locks so no other flow can start
+    #   1. Guard - block if already running
+    #   2. Set locks so no other flow interrupts
     #   3. Show ACCESS GRANTED - hold 2s
     #   4. Blink green in background
     #   5. Publish access_allowed event to dashboard
     #   6. Energize solenoid - drawer can now be opened
-    #   7. 10-second countdown on screen
-    #   8. De-energize solenoid - window expired
-    #   9. Show WINDOW ENDED - hold 1.5s
-    #  10. Blocking tail animation as end-of-procedure signal
-    #  11. Publish unlock_window_ended event
-    #
-    # CancelledError path (drawer opened mid-countdown):
-    #   - Solenoid turns off immediately
-    #   - Dashboard is notified with unlock_cancelled event
-    #   - finally block still runs to reset all state
+    #   7. 10-second countdown - exits early if drawer opens
+    #   8. De-energize solenoid - window expired or drawer opened
+    #   9. Branch: drawer was opened → publish event and stop
+    #             drawer was NOT opened → show WINDOW ENDED + tail animation
+    #  10. Publish result event to dashboard
     # ------------------------------------------------------------
 
     async def unlock_procedure_async(self, source="rfid", uid_hex="", label=""):
-        # Guard - should not be reachable but protects against edge cases
+
+        # 1. Guard - should not be reachable but protects against edge cases
         if self.unlock_in_progress:
             return
 
-        # Set both flags so RFID and commands are silently dropped during the flow
+        # 2. Set both flags so RFID and commands are silently dropped during the flow
         self.unlock_in_progress = True
         self.system_locked      = True
 
@@ -206,13 +216,13 @@ class Procedures:
             uid_suffix   = uid_hex[-6:] if uid_hex else ""
             display_name = label if label else (uid_suffix if uid_suffix else "REMOTE")
 
-            # Show ACCESS GRANTED - log_now pauses here but other tasks still run
+            # 3. Show ACCESS GRANTED - log_now pauses here but other tasks still run
             await self.oled.log_now("ACCESS", "GRANTED", display_name, hold_ms=2000)
 
-            # Green blink fires in background - screensaver pauses and resumes around it
+            # 4. Green blink fires in background - idle loop pauses and resumes around it
             asyncio.create_task(self.led.blink_color_async(0, 255, 0, times=3))
 
-            # Tell the dashboard the access was granted with full detail
+            # 5. Tell the dashboard the access was granted with full detail
             self.publish({
                 "event":      "access_allowed",
                 "source":     source,
@@ -221,60 +231,61 @@ class Procedures:
                 "timestamp":  self.get_timestamp(),
             })
 
-            # Energize coil - physically releases the drawer latch
+            # 6. Energize coil - physically releases the drawer latch
             if self.solenoid:
                 self.solenoid.on()
 
-            # 10-second countdown - each log_now holds exactly 1 second
-            # CancelledError is raised here if on_drawer_open() cancels this task
+            # 7. Countdown - breaks early if drawer is opened during the window
+            # drawer_is_open is set by on_drawer_open() which runs as a background callback
             for seconds_left in range(10, 0, -1):
+                if self.drawer_is_open:
+                    break  # drawer opened - exit countdown naturally, no error
                 await self.oled.log_now(
                     "OPEN NOW", "TIME LEFT",
                     "{} SEC".format(seconds_left),
                     hold_ms=1000,
                 )
 
-            # Window expired - lock the drawer again
+            # 8. De-energize solenoid - window expired or drawer was opened
             if self.solenoid:
                 self.solenoid.off()
 
-            # Brief confirmation that the unlock window is over
-            await self.oled.log_now("UNLOCK", "WINDOW", "ENDED", hold_ms=1500)
+            # 9. Branch on what actually happened during the window
+            if self.drawer_is_open:
+                # Drawer was opened - this is the expected happy path
+                # on_drawer_open() already showed the screen message and published drawer_opened
+                # Nothing more to do here - system stays blocked until drawer closes
+                self.publish({
+                    "event":     "drawer_opened_during_unlock",
+                    "source":    source,
+                    "timestamp": self.get_timestamp(),
+                })
+            else:
+                # 10. Full window expired without the drawer being opened
+                await self.oled.log_now("UNLOCK", "WINDOW", "ENDED", hold_ms=1500)
 
-            # Blocking tail animation - intentional freeze as "procedure done" signal
-            # tail_circular() auto-resumes the LED screensaver when it finishes
-            self.led.tail_circular(cycles=2, delay_ms=35, r=0, g=255, b=0)
+                # Blocking tail animation - intentional freeze as "procedure done" signal
+                # tail_circular() auto-resumes the LED idle loop when it finishes
+                self.led.tail_circular(cycles=2, delay_ms=35, r=0, g=255, b=0)
 
-            # Tell the dashboard the full unlock sequence completed normally
-            self.publish({
-                "event":     "unlock_window_ended",
-                "source":    source,
-                "timestamp": self.get_timestamp(),
-            })
-
-        except asyncio.CancelledError:
-            # Drawer was opened mid-countdown - lock immediately and notify dashboard
-            if self.solenoid:
-                self.solenoid.off()
-
-            self.publish({
-                "event":     "unlock_cancelled",
-                "reason":    "drawer_opened",
-                "timestamp": self.get_timestamp(),
-            })
-
-            # Re-raise so asyncio marks the task as properly cancelled
-            raise
+                self.publish({
+                    "event":     "unlock_window_ended",
+                    "source":    source,
+                    "timestamp": self.get_timestamp(),
+                })
 
         finally:
-            # Runs on both normal end and cancel - always restore the system state
+            # Always runs - reset flow flags regardless of what happened above
             self.unlock_in_progress = False
             self.system_locked      = False
             self.active_unlock_task = None
 
-            # Return OLED to idle and ensure LED screensaver is back on
-            self.oled.show_main_mode()
-            self.led.start_screensaver()
+            # Only return to idle if drawer is closed - drawer open message must stay visible
+            if not self.drawer_is_open:
+                self.oled.show_main_mode()
+
+            # Screensaver restores regardless - strip should always be in idle state
+            self.led.start_idle_loop()
 
     # ------------------------------------------------------------
     # MQTT command handler - routes JSON commands from NiceGUI dashboard
@@ -287,6 +298,18 @@ class Procedures:
         if self.system_locked:
             return
 
+        # Blink the led strip 3 times in green color
+        asyncio.create_task(self.led.blink_color_async(0, 255, 0, times=3))
+
+        # Refuse all commands while drawer is physically open
+        if self.drawer_is_open:
+            self.publish({
+                "event":   "command_refused",
+                "reason":  "drawer is open - close drawer before sending commands",
+                "timestamp": self.get_timestamp(),
+            })
+            return
+
         command = msg.get("command", "") or msg.get("cmd", "")
 
         # --- unlock ---
@@ -296,19 +319,29 @@ class Procedures:
                 self.unlock_procedure_async(source="remote", label="REMOTE")
             )
 
-        # --- led_screensaver_on ---
-        # Enable the rainbow tail loop and return OLED to idle
-        elif command == "led_screensaver_on":
+        # --- led_idle_on ---
+        # Enable the pixel idle loop and return OLED to idle
+        elif command == "led_idle_on":
             if self.led:
-                self.led.start_screensaver()
+                self.led.start_idle_loop()
                 self.oled.show_main_mode()
 
-        # --- led_screensaver_off ---
-        # Stop screensaver permanently until re-enabled - strip goes dark
-        elif command == "led_screensaver_off":
+        # --- led_idle_off ---
+        # Stop idle loop permanently until re-enabled - strip goes dark
+        elif command == "led_idle_off":
             if self.led:
-                self.led.stop_screensaver()
+                self.led.stop_idle_loop()
                 self.oled.show_main_mode()
+                
+        # --- led_idle_1 / led_idle_2 ---
+        # Switch between idle loop animations from the dashboard
+        elif command == "led_idle_1":
+            if self.led:
+                self.led.set_idle_loop(1)
+
+        elif command == "led_idle_2":
+            if self.led:
+                self.led.set_idle_loop(2)
 
         # --- led_blink ---
         # One-shot blink with a custom RGB color and repeat count
@@ -335,18 +368,17 @@ class Procedures:
                     b        = int(msg.get("b", 255)),
                 ))
 
-        # --- led_off ---
-        # Stop screensaver and turn strip dark (enabled=False prevents auto-resume)
+        # Stop idle loop and turn strip dark (enabled=False prevents auto-resume)
         elif command == "led_off":
             if self.led:
-                self.led.stop_screensaver()
+                self.led.stop_idle_loop()
 
         # --- set_idle_screen ---
         # Update the text shown on OLED when the system is waiting for input
         # JSON: {"command": "set_idle_screen", "line1": "LOCKED", "line2": "SCAN CARD", "line3": ""}
         elif command == "set_idle_screen":
             if self.oled:
-                self.oled.set_screensaver((
+                self.oled.set_idle_screen((
                     str(msg.get("line1", "READY")),
                     str(msg.get("line2", "SCAN CARD")),
                     str(msg.get("line3", "")),
