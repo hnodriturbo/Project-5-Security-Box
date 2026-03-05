@@ -260,28 +260,42 @@ def index():
                     "text-base font-semibold text-blue-800 mb-3"
                 )
 
-                # Quick screensaver and strip-off buttons in one row
-                with ui.row().classes("gap-2 mb-3"):
-                    ui.button(
-                        "Screensaver ON",
-                        on_click=lambda: mqtt.publish_queue.put_nowait(
-                            {"command": "led_screensaver_on"}
-                        ),
-                    ).classes("bg-blue-500 text-white rounded-lg px-3 py-2 text-sm")
+            # Quick screensaver and strip-off buttons in one row
+            with ui.row().classes("gap-2 mb-3"):
+                ui.button(
+                    "Screensaver ON",
+                    on_click=lambda: mqtt.publish_queue.put_nowait(
+                        {"command": "led_idle_on"}
+                    ),
+                ).classes("bg-blue-500 text-white rounded-lg px-3 py-2 text-sm")
 
-                    ui.button(
-                        "Screensaver OFF",
-                        on_click=lambda: mqtt.publish_queue.put_nowait(
-                            {"command": "led_screensaver_off"}
-                        ),
-                    ).classes("bg-blue-300 text-blue-900 rounded-lg px-3 py-2 text-sm")
+                ui.button(
+                    "Screensaver OFF",
+                    on_click=lambda: mqtt.publish_queue.put_nowait(
+                        {"command": "led_idle_off"}
+                    ),
+                ).classes("bg-blue-300 text-blue-900 rounded-lg px-3 py-2 text-sm")
 
-                    ui.button(
-                        "Strip OFF",
-                        on_click=lambda: mqtt.publish_queue.put_nowait(
-                            {"command": "led_off"}
-                        ),
-                    ).classes("bg-gray-400 text-white rounded-lg px-3 py-2 text-sm")
+                ui.button(
+                    "Strip OFF",
+                    on_click=lambda: mqtt.publish_queue.put_nowait(
+                        {"command": "led_off"}
+                    ),
+                ).classes("bg-gray-400 text-white rounded-lg px-3 py-2 text-sm")
+
+                ui.button(
+                    "Idle 1",
+                    on_click=lambda: mqtt.publish_queue.put_nowait(
+                        {"command": "led_idle_1"}
+                    ),
+                ).classes("bg-purple-500 text-white rounded-lg px-3 py-2 text-sm")
+
+                ui.button(
+                    "Idle 2",
+                    on_click=lambda: mqtt.publish_queue.put_nowait(
+                        {"command": "led_idle_2"}
+                    ),
+                ).classes("bg-purple-300 text-purple-900 rounded-lg px-3 py-2 text-sm")
 
                 ui.separator()
 
