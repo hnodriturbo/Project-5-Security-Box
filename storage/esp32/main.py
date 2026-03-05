@@ -102,7 +102,16 @@ async def main():
     # RFID events will publish JSON to the dashboard immediately.
     # --------------------------------------------------
     controller.start_rfid()
-
+    
+    # Log startup — prints to console, shows on OLED queue, AND publishes to dashboard
+    controller.log(
+        "BOX", "ONLINE", "READY",
+        publish_event="box_online",
+        publish_source="esp32",
+        publish_data={"message": "Security box started successfully"},
+        publish_success=True,
+    )
+    
     # --------------------------------------------------
     # Step 8 — Show idle screen
     # Queue worker and broker are running, RFID is scanning.

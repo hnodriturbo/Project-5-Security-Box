@@ -63,25 +63,27 @@ def update_ui():
 # render_log
 # Refreshable block — ui.timer calls render_log.refresh() every 0.5s.
 # Renders the log_lines list from mqtt_handler, newest entries first.
-# Color-coded by keyword: red=denied/fail, green=allowed/sent, blue=raw.
+# Color-coded by keyword: red=denied/fail, green=allowed/sent, blue=incoming.
 # --------------------------------------------------
 @ui.refreshable
 def render_log():
     # Show placeholder if nothing has arrived yet
     if not mqtt.log_lines:
-        ui.label("Waiting for events...").classes("text-xs text-gray-400 italic")
+        ui.label("Waiting for events...").classes("text-xs text-gray-300 italic")
         return
 
     # Iterate reversed so newest message appears at the top of the scroll area
     for line in reversed(mqtt.log_lines):
         if "DENIED" in line or "error" in line.lower() or "fail" in line.lower():
-            css = "text-xs font-mono text-red-500"
+            css = "text-xs font-mono text-red-400"
         elif "ALLOWED" in line or "SENT" in line or "connected" in line.lower():
-            css = "text-xs font-mono text-green-700"
-        elif "RAW IN" in line:
-            css = "text-xs font-mono text-blue-500"
+            css = "text-xs font-mono text-green-400"
+        elif "📥 IN:" in line:
+            css = "text-xs font-mono text-blue-400"
+        elif "📤 SENT:" in line:
+            css = "text-xs font-mono text-yellow-400"
         else:
-            css = "text-xs font-mono text-gray-700"
+            css = "text-xs font-mono text-white"
 
         ui.label(line).classes(css)
 
@@ -426,9 +428,9 @@ def index():
                     on_click=lambda: (mqtt.log_lines.clear(), render_log.refresh()),
                 ).props("flat dense size=sm")
 
-            # Dark scrollable area — fixed height, renders log entries inside
+            # Medium-dark scrollable area — fixed height, renders log entries inside
             with ui.scroll_area().classes(
-                "w-full h-96 border rounded-lg bg-gray-900 p-3"
+                "w-full h-96 border rounded-lg bg-gray-700 p-3"
             ):
                 render_log()
 

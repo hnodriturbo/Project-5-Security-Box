@@ -23,31 +23,26 @@ import asyncio
 # -----------------------------
 if sys.platform.startswith("win"):
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-# --------------------------------------------------
-# MQTT Broker
-# --------------------------------------------------
 
-# ACTIVE BROKER: EMQX public broker for training/testing
-# BROKER_HOST = "broker.emqx.io"
-BROKER_HOST = "192.168.1.51"
-# BROKER_HOST = "127.0.0.1"
+# --------------------------------------------------
+# MQTT Brokers — Dual-broker with automatic fallback
+# --------------------------------------------------
+# Primary: Raspberry Pi broker (school network)
+# Fallback: Your home broker
+# The mqtt_handler will try primary first, then fallback.
+# --------------------------------------------------
+BROKER_PRIMARY = "10.201.48.7"  # Raspberry Pi (main)
+BROKER_FALLBACK = "192.168.1.51"  # Home broker (fallback)
 BROKER_PORT = 1883  # standard MQTT port, no TLS, no auth
 
-# --------------------------------------------------
-# RASPBERRY PI BROKER (uncomment when running on Pi)
-# NiceGUI runs on the Pi → use localhost (same machine as Mosquitto)
-# --------------------------------------------------
-# BROKER_HOST = "localhost"  # Pi talks to its own Mosquitto broker
-# BROKER_PORT = 1883
-
-# Fallback for running dashboard on a different machine (e.g. your laptop)
-# BROKER_HOST = "10.201.48.7"   # uncomment if running dashboard off-Pi
+# Maximum connection attempts before giving up (tries both brokers each round)
+MAX_CONNECTION_RETRIES = 10
 
 # --------------------------------------------------
-# Topics — must match ESP32 box_controller.py exactly
+# Topics that match ESP32 box_controller.py exactly
 # Direction:
-#   ESP32  →  publishes to Events    (subscribe here)
-#   ESP32  ←  subscribes to Commands (publish here)
+#   ESP32  →  publishes to Events    (subscribe)
+#   ESP32  ←  subscribes to Commands (publish)
 # --------------------------------------------------
 BASE_TOPIC = "MyTopic"
 TOPIC_EVENTS = "MyTopic/Events"  # we subscribe — receive from ESP32

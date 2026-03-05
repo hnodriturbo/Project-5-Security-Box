@@ -4,6 +4,12 @@
 
 ---
 
+## Couldn't add video to inna delivery so I have it locally. Can I send it to you?
+- I had to use the black box the previous print because the new grey print was way too much the corners of the bottom had lifted up and this is because there is only 1 wall holding when walls start to create where there are these 2 holes (drawer hole) and the esp32 electricity hole in the back of the box. Those 2 lifts of the bottom actually were worse so I had to reverse to the Black box design and This took ALOT of time today and finishing now.
+
+NOTE: MAIN CODE IS IN /esp32-s3
+
+---
 ## 1. Project Overview
 
 3D printed IoT security drawer box built around an ESP32-S3 and Raspberry Pi running NiceGUI.

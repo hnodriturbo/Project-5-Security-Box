@@ -1,4 +1,6 @@
 # Universal .gitignore File
+storage/esp32/.claude/
+
 
 BFG-Windows-1.13.0/*
 BFG-Windows-1.13.0

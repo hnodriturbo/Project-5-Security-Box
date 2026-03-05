@@ -23,11 +23,13 @@ from datetime import datetime
 from aiomqtt import Client
 
 from config import (
-    BROKER_HOST,
+    BROKER_PRIMARY,
+    BROKER_FALLBACK,
     BROKER_PORT,
     TOPIC_EVENTS,
     TOPIC_COMMANDS,
     MAX_LOG_LINES,
+    MAX_CONNECTION_RETRIES,
 )
 
 # --------------------------------------------------
@@ -37,6 +39,7 @@ state = {
     "mqtt_connected": False,
     "last_rfid": None,  # dict: result / display / ts
     "last_event": None,  # raw last event dict
+    "active_broker": None,  # which broker we're connected to
 }
 
 # Event log list — dashboard renders this reversed (newest at top)
@@ -48,6 +51,9 @@ publish_queue = queue.Queue()
 # Internal: the MQTT thread's event loop (set when thread starts)
 mqtt_loop = None
 
+# Broker list for fallback logic
+BROKERS = [BROKER_PRIMARY, BROKER_FALLBACK]
+
 
 # --------------------------------------------------
 # add_log() — timestamped log entry
@@ -58,6 +64,29 @@ def add_log(message):
     log_lines.append(entry)
     if len(log_lines) > MAX_LOG_LINES:
         del log_lines[:-MAX_LOG_LINES]
+
+
+# --------------------------------------------------
+# format_payload() — pretty-print a dict for the log
+# Converts raw JSON to a readable multi-key format
+# --------------------------------------------------
+def format_payload(payload, prefix=""):
+    """Format a payload dict into a readable string for logging."""
+    if not isinstance(payload, dict):
+        return str(payload)
+
+    parts = []
+    for key, value in payload.items():
+        if isinstance(value, dict):
+            # Nested dict: show key=subkey:val,subkey:val
+            sub_parts = ["{}:{}".format(k, v) for k, v in value.items()]
+            parts.append("{}=[{}]".format(key, ", ".join(sub_parts)))
+        elif value == "" or value is None:
+            continue  # Skip empty values
+        else:
+            parts.append("{}={}".format(key, value))
+
+    return "{} {}".format(prefix, " | ".join(parts)) if prefix else " | ".join(parts)
 
 
 # --------------------------------------------------
@@ -100,36 +129,93 @@ def handle_inbound(payload):
 
 
 # --------------------------------------------------
-# mqtt_receive_loop() — persistent subscribe connection
-# Reconnects automatically on disconnect
+# try_connect_to_broker() — attempts connection to a specific broker
+# Returns the client if successful, None if failed
+# --------------------------------------------------
+async def try_connect_to_broker(broker_host):
+    try:
+        add_log("Attempting connection to {}:{}".format(broker_host, BROKER_PORT))
+        client = Client(broker_host, BROKER_PORT)
+        await client.__aenter__()
+        return client
+    except Exception as e:
+        add_log("Failed to connect to {}: {}".format(broker_host, e))
+        return None
+
+
+# --------------------------------------------------
+# connect_with_fallback() — tries primary, then fallback broker
+# Returns (client, broker_host) tuple or (None, None) if both fail
+# --------------------------------------------------
+async def connect_with_fallback():
+    for broker in BROKERS:
+        client = await try_connect_to_broker(broker)
+        if client:
+            state["active_broker"] = broker
+            add_log("Connected to broker: {}".format(broker))
+            return client, broker
+    return None, None
+
+
+# --------------------------------------------------
+# mqtt_receive_loop() — persistent subscribe connection with dual-broker fallback
+# Tries primary, then fallback. If both fail, retries up to MAX_CONNECTION_RETRIES.
 # --------------------------------------------------
 async def mqtt_receive_loop():
-    while True:
-        try:
-            add_log("MQTT connecting -> {}:{}".format(BROKER_HOST, BROKER_PORT))
-            async with Client(BROKER_HOST, BROKER_PORT) as client:
-                state["mqtt_connected"] = True
-                add_log("MQTT connected — subscribed to: {}".format(TOPIC_EVENTS))
-                await client.subscribe(TOPIC_EVENTS)
+    retry_count = 0
 
-                async for message in client.messages:
-                    try:
-                        payload = json.loads(message.payload.decode("utf-8"))
-                        # Log raw JSON first — full visibility
-                        add_log("RAW IN: {}".format(json.dumps(payload)))
-                        handle_inbound(payload)
-                    except Exception as e:
-                        add_log("Parse error: {}".format(e))
+    while True:
+        # Try to connect to either broker
+        client, broker = await connect_with_fallback()
+
+        if client is None:
+            # Both brokers failed
+            retry_count += 1
+            if retry_count <= MAX_CONNECTION_RETRIES:
+                add_log(
+                    "Cannot connect to either broker. Reconnecting... ({}/{})".format(
+                        retry_count, MAX_CONNECTION_RETRIES
+                    )
+                )
+                await asyncio.sleep(5)
+                continue
+            else:
+                add_log(
+                    "CRITICAL: Max retries ({}) reached. Will keep trying...".format(
+                        MAX_CONNECTION_RETRIES
+                    )
+                )
+                retry_count = 0  # Reset and keep trying forever
+                await asyncio.sleep(10)
+                continue
+
+        # Successfully connected
+        retry_count = 0  # Reset retry counter on successful connection
+        state["mqtt_connected"] = True
+
+        try:
+            add_log("MQTT connected — subscribed to: {}".format(TOPIC_EVENTS))
+            await client.subscribe(TOPIC_EVENTS)
+
+            async for message in client.messages:
+                try:
+                    payload = json.loads(message.payload.decode("utf-8"))
+                    # Log formatted payload — readable format
+                    add_log(format_payload(payload, "📥 IN:"))
+                    handle_inbound(payload)
+                except Exception as e:
+                    add_log("Parse error: {}".format(e))
 
         except Exception as e:
             state["mqtt_connected"] = False
-            add_log("MQTT disconnected: {}".format(e))
+            state["active_broker"] = None
+            add_log("MQTT disconnected from {}: {}".format(broker, e))
             await asyncio.sleep(5)
 
 
 # --------------------------------------------------
 # mqtt_publish_loop() — drain queue, send one at a time
-# Uses thread-safe queue.Queue — polls with timeout
+# Uses the active broker from state, or tries both if none active
 # --------------------------------------------------
 async def mqtt_publish_loop():
     while True:
@@ -140,13 +226,28 @@ async def mqtt_publish_loop():
             await asyncio.sleep(0.1)
             continue
 
-        try:
-            raw = json.dumps(payload_dict).encode("utf-8")
-            async with Client(BROKER_HOST, BROKER_PORT) as client:
-                await client.publish(TOPIC_COMMANDS, raw)
-            add_log("SENT -> {}".format(json.dumps(payload_dict)))
-        except Exception as e:
-            add_log("Send error: {}  payload={}".format(e, payload_dict))
+        # Determine which broker to use for publishing
+        brokers_to_try = []
+        if state["active_broker"]:
+            brokers_to_try = [state["active_broker"]]
+        else:
+            brokers_to_try = BROKERS
+
+        sent = False
+        raw = json.dumps(payload_dict).encode("utf-8")
+
+        for broker in brokers_to_try:
+            try:
+                async with Client(broker, BROKER_PORT) as client:
+                    await client.publish(TOPIC_COMMANDS, raw)
+                add_log(format_payload(payload_dict, "📤 SENT:"))
+                sent = True
+                break
+            except Exception as e:
+                add_log("Send error on {}: {}".format(broker, e))
+
+        if not sent:
+            add_log("Failed to send to any broker: {}".format(payload_dict))
 
 
 # --------------------------------------------------
