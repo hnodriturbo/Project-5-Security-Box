@@ -118,7 +118,9 @@ class Procedures:
 
     async def on_drawer_open(self):
         print("[REED] drawer OPENED")
-
+        
+        # Set the drawer is open to true to stop the system while drawer is open
+        self.drawer_is_open = True
         # Solenoid off immediately - no need to keep it energized
         if self.solenoid:
             self.solenoid.off()
@@ -133,7 +135,10 @@ class Procedures:
 
     async def on_drawer_close(self):
         print("[REED] drawer CLOSED")
-
+    
+        # Change drawer is open to False again to  go back to main system
+        self.drawer_is_open = False
+        
         # Guarantee solenoid is off regardless of how drawer was closed
         if self.solenoid:
             self.solenoid.off()
@@ -390,12 +395,16 @@ class Procedures:
         # JSON: {"command": "oled_show", "line1": "HELLO", "line2": "WORLD", "line3": ""}
         elif command == "oled_show":
             if self.oled:
-                self.oled.show_three_lines(
+                async def _show_and_restore(l1, l2, l3, ms):
+                    await self.oled.log_now(l1, l2, l3, hold_ms=ms)
+                    self.oled.show_main_mode()
+                asyncio.create_task(self.oled.log_now(
                     str(msg.get("line1", "")),
                     str(msg.get("line2", "")),
                     str(msg.get("line3", "")),
-                )
-
+                    hold_ms=int(msg.get("hold_ms", 3000)),
+                ))
+                
         # --- unknown ---
         # Log unknown commands to console and OLED so they are easy to debug
         else:
