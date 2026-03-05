@@ -6,7 +6,7 @@
 
 ## Latest update = VIDEO USAGE:
 
-https://github.com/hnodriturbo/Project-5-Security-Box/raw/main/usage_function_video.mp4
+https://github.com/hnodriturbo/Project-5-Security-Box/raw/master/usage_function_video.mp4
 
 
 
