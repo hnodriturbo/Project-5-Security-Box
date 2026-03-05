@@ -94,7 +94,7 @@ async def main():
     )
     
     # Start the broker
-    broker.start()
+    broker.start(oled)
     
     # Broker waits until ready, rechecks every 30 seconds but box state still goes to
     # normal mode so rfid scanning works even though we don't have connection

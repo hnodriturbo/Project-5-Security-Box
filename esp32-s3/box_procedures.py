@@ -78,26 +78,32 @@ class Procedures:
         # Send a JSON dict to the MQTT dashboard - silent drop if not connected
         if self.broker:
             self.broker.send_json(payload)
-
-    def log(self, line1, line2="", line3="", hold_ms=2000,
-            publish_event=None, publish_source=None, publish_data=None, publish_success=True):
-        # Print to console and show on OLED immediately (no queue)
-        print("[LOG]", line1, "|", line2, "|", line3)
+            
+    def notify(self, line1, line2="", line3="", event=None, **extra):
+        # Console + OLED + optional JSON event in one call
+        print("[BOX]", line1, "|", line2, "|", line3)
         if self.oled:
             self.oled.show_three_lines(line1, line2, line3)
+        if event and self.broker:
+            payload = {"event": event, "timestamp": self.get_timestamp()}
+            payload.update(extra)
+            self.publish(payload)
 
-        # Optionally build and publish a JSON event to the dashboard
-        if publish_event and self.broker:
-            payload = {
-                "event":     publish_event,
-                "source":    publish_source or "esp32",
-                "status":    "ok" if publish_success else "fail",
-                "timestamp": self.get_timestamp(),
-            }
-            if publish_data:
-                payload["data"] = publish_data
-            self.broker.send_json(payload)
+    def ack(self, command, status="ok", **extra):
+        # Publish JSON back confirming command was received and executed
+        payload = {
+            "event":     "command_ack",
+            "command":   command,
+            "status":    status,
+            "timestamp": self.get_timestamp(),
+        }
+        payload.update(extra)
+        self.publish(payload)
 
+    async def oled_show_then_restore(self, line1, line2, line3, hold_ms):
+        # Show custom text for hold_ms then return to idle screen
+        await self.oled.log_now(line1, line2, line3, hold_ms=hold_ms)
+        self.oled.show_main_mode()
     
     async def heartbeat_loop(self):
         # Sends system status to dashboard every 30 seconds
@@ -111,7 +117,17 @@ class Procedures:
                 "timestamp": self.get_timestamp(),
             })
             await asyncio.sleep(60)
-            
+
+    # ------------------------------------------------------------
+    # Reed switch callbacks - wired in __init__, called by poll_loop
+    # ------------------------------------------------------------
+    def ack(self, command, **extra):
+        # Publish confirmation back to dashboard after every command is handled
+        payload = {"event": "Command Acknowledgement", "command": command, , "timestamp": self.get_timestamp()}
+        payload.update(extra)
+        self.publish(payload)
+
+
     # ------------------------------------------------------------
     # Reed switch callbacks - wired in __init__, called by poll_loop
     # ------------------------------------------------------------
@@ -179,13 +195,17 @@ class Procedures:
         uid_hex    = payload.get("uid_hex", "")
         uid_suffix = uid_hex[-6:] if uid_hex else "UNKNWN"
 
-        self.log(
-            "RFID", "DENIED", uid_suffix,
-            publish_event  = "rfid_denied",
-            publish_source = "rfid",
-            publish_data   = {"uid_suffix": uid_suffix},
-            publish_success = False,
-        )
+        print("[BOX] RFID | DENIED |", uid_suffix)
+        if self.oled:
+            self.oled.show_three_lines("RFID", "DENIED", uid_suffix)
+            
+        self.publish({
+            "event":     "rfid_denied",
+            "source":    "rfid",
+            "status":    "fail",
+            "data":      {"uid_suffix": uid_suffix},
+            "timestamp": self.get_timestamp(),
+        })
 
         # Blink red in background - idle loop auto-pauses and resumes
         asyncio.create_task(self.led.blink_color_async(255, 0, 0, times=3))
@@ -242,7 +262,7 @@ class Procedures:
 
             # 7. Countdown - breaks early if drawer is opened during the window
             # drawer_is_open is set by on_drawer_open() which runs as a background callback
-            for seconds_left in range(10, 0, -1):
+            for seconds_left in range(5, 0, -1):
                 if self.drawer_is_open:
                     break  # drawer opened - exit countdown naturally, no error
                 await self.oled.log_now(
@@ -302,9 +322,10 @@ class Procedures:
         # Ignore all commands while a procedure is running
         if self.system_locked:
             return
-
-        # Blink the led strip 3 times in green color
-        asyncio.create_task(self.led.blink_color_async(0, 255, 0, times=3))
+        
+        command = msg.get("command", "") or msg.get("cmd", "")
+        # Show incoming command on screen briefly before handling it
+        self.oled.show_three_lines("CMD RECEIVED", command[:16], "")
 
         # Refuse all commands while drawer is physically open
         if self.drawer_is_open:
@@ -330,6 +351,7 @@ class Procedures:
             if self.led:
                 self.led.start_idle_loop()
                 self.oled.show_main_mode()
+                self.ack("led_idle_on")
 
         # --- led_idle_off ---
         # Stop idle loop permanently until re-enabled - strip goes dark
@@ -337,17 +359,8 @@ class Procedures:
             if self.led:
                 self.led.stop_idle_loop()
                 self.oled.show_main_mode()
+                self.ack("led_idle_off")
                 
-        # --- led_idle_1 / led_idle_2 ---
-        # Switch between idle loop animations from the dashboard
-        elif command == "led_idle_1":
-            if self.led:
-                self.led.set_idle_loop(1)
-
-        elif command == "led_idle_2":
-            if self.led:
-                self.led.set_idle_loop(2)
-
         # --- led_blink ---
         # One-shot blink with a custom RGB color and repeat count
         # JSON: {"command": "led_blink", "r": 255, "g": 0, "b": 0, "times": 3}
@@ -359,7 +372,20 @@ class Procedures:
                     int(msg.get("b", 255)),
                     times = int(msg.get("times", 3)),
                 ))
+                self.ack("led_blink")
 
+        # --- led_idle_1 / led_idle_2 ---
+        # Switch between idle loop animations from the dashboard
+        elif command == "led_idle_1":
+            if self.led:
+                self.led.set_idle_loop(1)
+                self.ack("led_idle_1")
+
+        elif command == "led_idle_2":
+            if self.led:
+                self.led.set_idle_loop(2)
+                self.ack("led_idle_2")
+            
         # --- led_tail ---
         # One-shot tail animation with custom color, cycles, and speed
         # JSON: {"command": "led_tail", "r": 0, "g": 255, "b": 0, "cycles": 2, "delay_ms": 35}
@@ -372,40 +398,45 @@ class Procedures:
                     g        = int(msg.get("g", 0)),
                     b        = int(msg.get("b", 255)),
                 ))
+                self.ack("led_tail")
 
         # Stop idle loop and turn strip dark (enabled=False prevents auto-resume)
         elif command == "led_off":
             if self.led:
                 self.led.stop_idle_loop()
-
+                self.ack("oled_show")
+            
         # --- set_idle_screen ---
         # Update the text shown on OLED when the system is waiting for input
         # JSON: {"command": "set_idle_screen", "line1": "LOCKED", "line2": "SCAN CARD", "line3": ""}
         elif command == "set_idle_screen":
-            if self.oled:
+            if self.oledshoul
                 self.oled.set_idle_screen((
                     str(msg.get("line1", "READY")),
                     str(msg.get("line2", "SCAN CARD")),
                     str(msg.get("line3", "")),
                 ))
                 self.oled.show_main_mode()
+                self.ack("set_idle_screen")
 
         # --- oled_show ---
         # Show arbitrary text on the OLED immediately (replaces current screen)
         # JSON: {"command": "oled_show", "line1": "HELLO", "line2": "WORLD", "line3": ""}
         elif command == "oled_show":
             if self.oled:
-                async def _show_and_restore(l1, l2, l3, ms):
-                    await self.oled.log_now(l1, l2, l3, hold_ms=ms)
-                    self.oled.show_main_mode()
                 asyncio.create_task(self.oled.log_now(
                     str(msg.get("line1", "")),
                     str(msg.get("line2", "")),
                     str(msg.get("line3", "")),
                     hold_ms=int(msg.get("hold_ms", 3000)),
                 ))
-                
+                self.oled.show_main_mode()
+                self.ack("oled_show")
+            
         # --- unknown ---
         # Log unknown commands to console and OLED so they are easy to debug
         else:
-            self.log("CMD", "UNKNOWN", str(command)[:16])
+        print("[BOX] CMD | UNKNOWN |", str(command)[:16])
+        if self.oled:
+            self.oled.show_three_lines("CMD", "UNKNOWN", str(command)[:16])
+        self.ack("unknown", status="fail", received=str(command)[:16])

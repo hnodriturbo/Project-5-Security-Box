@@ -51,6 +51,10 @@ class MqttJsonBroker:
         broker_fallback,
         base_topic,
     ):
+        
+        # wired via start(oled) - shows boot status on screen
+        self.oled = None 
+        
         # WiFi credentials - primary tried first, fallback if primary fails
         self.wifi_primary  = wifi_primary
         self.wifi_fallback = wifi_fallback
@@ -104,7 +108,9 @@ class MqttJsonBroker:
     # Public API - called from main.py and procedures
     # ------------------------------------------------------------
 
-    def start(self):
+    def start(self, oled=None):
+        # Create the oled
+        self.oled = oled
         # Launch the connection loop as a background task - returns immediately
         asyncio.create_task(self.run_forever())
 
@@ -208,6 +214,8 @@ class MqttJsonBroker:
 
         if not self.scan_available(ssid):
             self.log("WIFI", "not in range", ssid)
+            if self.oled:
+                self.oled.show_three_lines("WIFI", "CONNECTING", ssid[:10])
             return False
 
         # Reset radio to clear any stuck internal state from previous attempt
@@ -222,6 +230,8 @@ class MqttJsonBroker:
         for _ in range(40):
             if self.wlan.isconnected():
                 self.log("WIFI", "connected", ssid)
+                if self.oled:
+                    self.oled.show_three_lines("WIFI", "CONNECTED", ssid[:10])
                 return True
             await asyncio.sleep_ms(250)
 
@@ -243,6 +253,8 @@ class MqttJsonBroker:
             return False
 
         self.log("MQTT", "connecting", host)
+        if self.oled:
+            self.oled.show_three_lines("MQTT", "CONNECTING", host)
 
         try:
             # Unique client ID prevents the broker from rejecting duplicate connections
@@ -263,6 +275,8 @@ class MqttJsonBroker:
             self.log("MQTT", "connected", host)
             self.log("Subscribed to:", self.command_topic)
             self.log("Publishing to:", self.event_topic)
+            if self.oled:
+                self.oled.show_three_lines("MQTT", "CONNECTED", host)
 
             # Notify main.py so it can return the OLED to idle mode
             if self.on_connected_callback:
