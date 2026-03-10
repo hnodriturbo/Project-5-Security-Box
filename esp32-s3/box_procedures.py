@@ -18,13 +18,51 @@ Role in the box:
     solenoid, and broker as needed.
 
 Methods / callbacks:
-    * log()                    - console + OLED + optional MQTT publish
-    * on_drawer_open()         - reed callback: cancel unlock, publish event
-    * on_drawer_close()        - reed callback: lock solenoid, return to idle
-    * on_rfid_allowed()        - RFID callback: start unlock procedure
-    * on_rfid_denied()         - RFID callback: show denied, blink red
-    * unlock_procedure_async() - full unlock flow with countdown
-    * handle_command()         - route incoming JSON commands from dashboard
+    Helpers:
+        * get_timestamp()              - build ISO timestamp from RTC
+        * publish(payload)             - send JSON dict to MQTT dashboard
+        * notify()                     - console + OLED + optional MQTT publish
+        * ack()                        - publish command acknowledgement JSON
+        * oled_show_then_restore()     - show text on OLED then return to idle
+
+    Background tasks:
+        * heartbeat_loop()             - sends system status every 60 seconds
+
+    Reed switch callbacks:
+        * on_drawer_open()             - cancel unlock, publish event
+        * on_drawer_close()            - lock solenoid, return to idle
+
+    RFID callbacks:
+        * on_rfid_allowed()            - start unlock procedure
+        * on_rfid_denied()             - show denied, blink red
+
+    Procedures:
+        * unlock_procedure_async()     - full unlock flow with countdown
+
+    Command routing (handle_command):
+        Unlock:
+            unlock              - start unlock flow remotely
+
+        LED idle control:
+            led_idle_on         - enable idle loop
+            led_idle_off        - disable idle loop permanently
+            led_idle_1          - switch to mode 1 (shifting dots)
+            led_idle_2          - switch to mode 2 (even/odd rainbow)
+            led_idle_3          - switch to mode 3 (slow even/odd)
+
+        LED one-shot effects:
+            led_blink           - blink with custom RGB and count
+            led_tail            - chasing tail animation
+            led_rainbow         - rainbow wave sweep
+            led_pulse           - fade in/out effect
+            led_sparkle         - random flash effect
+            led_side_chase      - light each box side sequentially
+            led_fill            - solid color fill (stops idle)
+            led_off             - turn strip dark
+
+        OLED control:
+            oled_show           - show arbitrary text temporarily
+            set_idle_screen     - update default idle screen text
 """
 
 import uasyncio as asyncio
@@ -121,16 +159,6 @@ class Procedures:
     # ------------------------------------------------------------
     # Reed switch callbacks - wired in __init__, called by poll_loop
     # ------------------------------------------------------------
-    def ack(self, command, **extra):
-        # Publish confirmation back to dashboard after every command is handled
-        payload = {"event": "Command Acknowledgement", "command": command, , "timestamp": self.get_timestamp()}
-        payload.update(extra)
-        self.publish(payload)
-
-
-    # ------------------------------------------------------------
-    # Reed switch callbacks - wired in __init__, called by poll_loop
-    # ------------------------------------------------------------
 
     async def on_drawer_open(self):
         print("[REED] drawer OPENED")
@@ -208,7 +236,8 @@ class Procedures:
         })
 
         # Blink red in background - idle loop auto-pauses and resumes
-        asyncio.create_task(self.led.blink_color_async(255, 0, 0, times=3))
+        if self.led:
+            asyncio.create_task(self.led.blink_color_async(255, 0, 0, times=3))
 
     # ------------------------------------------------------------
     # Unlock procedure - the main flow of the security box
@@ -245,7 +274,8 @@ class Procedures:
             await self.oled.log_now("ACCESS", "GRANTED", display_name, hold_ms=2000)
 
             # 4. Green blink fires in background - idle loop pauses and resumes around it
-            asyncio.create_task(self.led.blink_color_async(0, 255, 0, times=3))
+            if self.led:
+                asyncio.create_task(self.led.blink_color_async(0, 255, 0, times=3))
 
             # 5. Tell the dashboard the access was granted with full detail
             self.publish({
@@ -291,8 +321,9 @@ class Procedures:
 
                 # Blocking tail animation - intentional freeze as "procedure done" signal
                 # tail_circular() auto-resumes the LED idle loop when it finishes
-                self.led.tail_circular(cycles=2, delay_ms=35, r=0, g=255, b=0)
-
+                if self.led:
+                    self.led.tail_circular(cycles=2, delay_ms=35, r=0, g=255, b=0)
+                
                 self.publish({
                     "event":     "unlock_window_ended",
                     "source":    source,
@@ -310,8 +341,9 @@ class Procedures:
                 self.oled.show_main_mode()
 
             # Screensaver restores regardless - strip should always be in idle state
-            self.led.start_idle_loop()
-
+            if self.led:
+                self.led.start_idle_loop()
+                
     # ------------------------------------------------------------
     # MQTT command handler - routes JSON commands from NiceGUI dashboard
     # Called by mqtt_json_broker.on_message() on every incoming message
@@ -336,21 +368,20 @@ class Procedures:
             })
             return
 
-        command = msg.get("command", "") or msg.get("cmd", "")
-
         # --- unlock ---
         # Start the full unlock flow remotely, identical to a card scan
         if command == "unlock":
             self.active_unlock_task = asyncio.create_task(
                 self.unlock_procedure_async(source="remote", label="REMOTE")
             )
+            return # Procedure handles the OLED screen
 
         # --- led_idle_on ---
         # Enable the pixel idle loop and return OLED to idle
         elif command == "led_idle_on":
             if self.led:
                 self.led.start_idle_loop()
-                self.oled.show_main_mode()
+                # self.oled.show_main_mode()
                 self.ack("led_idle_on")
 
         # --- led_idle_off ---
@@ -358,7 +389,7 @@ class Procedures:
         elif command == "led_idle_off":
             if self.led:
                 self.led.stop_idle_loop()
-                self.oled.show_main_mode()
+                # self.oled.show_main_mode()
                 self.ack("led_idle_off")
                 
         # --- led_blink ---
@@ -404,39 +435,118 @@ class Procedures:
         elif command == "led_off":
             if self.led:
                 self.led.stop_idle_loop()
-                self.ack("oled_show")
+                self.ack("led_off")
             
         # --- set_idle_screen ---
         # Update the text shown on OLED when the system is waiting for input
         # JSON: {"command": "set_idle_screen", "line1": "LOCKED", "line2": "SCAN CARD", "line3": ""}
         elif command == "set_idle_screen":
-            if self.oledshoul
+            if self.oled:
                 self.oled.set_idle_screen((
                     str(msg.get("line1", "READY")),
                     str(msg.get("line2", "SCAN CARD")),
                     str(msg.get("line3", "")),
                 ))
-                self.oled.show_main_mode()
+                # self.oled.show_main_mode()
                 self.ack("set_idle_screen")
+        
+        # --- led_idle_3 ---        
+        # Switch to mode 3: slow even/odd alternating (1 second each)
+        elif command == "led_idle_3":
+            if self.led:
+                self.led.set_idle_loop(3)
+                self.ack("led_idle_3")
 
+        # --- led_rainbow ---
+        # One-shot rainbow wave effect
+        # JSON: {"command": "led_rainbow", "cycles": 2, "speed_ms": 30}
+        elif command == "led_rainbow":
+            if self.led:
+                asyncio.create_task(self.led.rainbow_wave_async(
+                    cycles   = int(msg.get("cycles", 2)),
+                    speed_ms = int(msg.get("speed_ms", 30)),
+                ))
+                self.ack("led_rainbow")
+
+        # --- led_pulse ---
+        # One-shot pulse (fade in/out) effect
+        # JSON: {"command": "led_pulse", "r": 0, "g": 100, "b": 255, "cycles": 3, "speed_ms": 20}
+        elif command == "led_pulse":
+            if self.led:
+                asyncio.create_task(self.led.pulse_async(
+                    r        = int(msg.get("r", 0)),
+                    g        = int(msg.get("g", 100)),
+                    b        = int(msg.get("b", 255)),
+                    cycles   = int(msg.get("cycles", 3)),
+                    speed_ms = int(msg.get("speed_ms", 20)),
+                ))
+                self.ack("led_pulse")
+
+        # --- led_sparkle ---
+        # One-shot sparkle (random flash) effect
+        # JSON: {"command": "led_sparkle", "r": 255, "g": 255, "b": 255, "duration_ms": 3000, "density": 20}
+        elif command == "led_sparkle":
+            if self.led:
+                asyncio.create_task(self.led.sparkle_async(
+                    r           = int(msg.get("r", 255)),
+                    g           = int(msg.get("g", 255)),
+                    b           = int(msg.get("b", 255)),
+                    duration_ms = int(msg.get("duration_ms", 3000)),
+                    density     = int(msg.get("density", 20)),
+                ))
+                self.ack("led_sparkle")
+
+        # --- led_side_chase ---
+        # One-shot side chase effect using box geometry
+        # JSON: {"command": "led_side_chase", "r": 0, "g": 255, "b": 100, "cycles": 2, "hold_ms": 300}
+        elif command == "led_side_chase":
+            if self.led:
+                asyncio.create_task(self.led.side_chase_async(
+                    r       = int(msg.get("r", 0)),
+                    g       = int(msg.get("g", 255)),
+                    b       = int(msg.get("b", 100)),
+                    cycles  = int(msg.get("cycles", 2)),
+                    hold_ms = int(msg.get("hold_ms", 300)),
+                ))
+                self.ack("led_side_chase")
+
+        # --- led_fill ---
+        # Fill entire strip with solid color (stops idle loop)
+        # JSON: {"command": "led_fill", "r": 255, "g": 0, "b": 0}
+        elif command == "led_fill":
+            if self.led:
+                self.led.pause_idle_loop_utility()
+                self.led.fill(
+                    int(msg.get("r", 255)),
+                    int(msg.get("g", 0)),
+                    int(msg.get("b", 0)),
+                )
+                self.ack("led_fill")
+                
         # --- oled_show ---
         # Show arbitrary text on the OLED immediately (replaces current screen)
         # JSON: {"command": "oled_show", "line1": "HELLO", "line2": "WORLD", "line3": ""}
         elif command == "oled_show":
             if self.oled:
-                asyncio.create_task(self.oled.log_now(
+                asyncio.create_task(self.oled_show_then_restore(
                     str(msg.get("line1", "")),
                     str(msg.get("line2", "")),
                     str(msg.get("line3", "")),
-                    hold_ms=int(msg.get("hold_ms", 3000)),
+                    int(msg.get("hold_ms", 3000)),
                 ))
-                self.oled.show_main_mode()
+                # self.oled.show_main_mode()
                 self.ack("oled_show")
+            return
             
         # --- unknown ---
         # Log unknown commands to console and OLED so they are easy to debug
         else:
-        print("[BOX] CMD | UNKNOWN |", str(command)[:16])
+            print("[BOX] CMD | UNKNOWN |", str(command)[:16])
+            if self.oled:
+                self.oled.show_three_lines("CMD", "UNKNOWN", str(command)[:16])
+            self.ack("unknown", status="fail", received=str(command)[:16])
+            return
+
+        # Restore OLED to idle after command processed
         if self.oled:
-            self.oled.show_three_lines("CMD", "UNKNOWN", str(command)[:16])
-        self.ack("unknown", status="fail", received=str(command)[:16])
+            self.oled.show_main_mode()

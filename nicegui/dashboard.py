@@ -260,42 +260,54 @@ def index():
                     "text-base font-semibold text-blue-800 mb-3"
                 )
 
-            # Quick screensaver and strip-off buttons in one row
-            with ui.row().classes("gap-2 mb-3"):
-                ui.button(
-                    "Screensaver ON",
-                    on_click=lambda: mqtt.publish_queue.put_nowait(
-                        {"command": "led_idle_on"}
-                    ),
-                ).classes("bg-blue-500 text-white rounded-lg px-3 py-2 text-sm")
+                # Quick screensaver and strip-off buttons in one row
+                with ui.row().classes("gap-2 mb-3 flex-wrap"):
+                    ui.button(
+                        "Screensaver ON",
+                        on_click=lambda: mqtt.publish_queue.put_nowait(
+                            {"command": "led_idle_on"}
+                        ),
+                    ).classes("bg-blue-500 text-white rounded-lg px-3 py-2 text-sm")
 
-                ui.button(
-                    "Screensaver OFF",
-                    on_click=lambda: mqtt.publish_queue.put_nowait(
-                        {"command": "led_idle_off"}
-                    ),
-                ).classes("bg-blue-300 text-blue-900 rounded-lg px-3 py-2 text-sm")
+                    ui.button(
+                        "Screensaver OFF",
+                        on_click=lambda: mqtt.publish_queue.put_nowait(
+                            {"command": "led_idle_off"}
+                        ),
+                    ).classes("bg-blue-300 text-blue-900 rounded-lg px-3 py-2 text-sm")
 
-                ui.button(
-                    "Strip OFF",
-                    on_click=lambda: mqtt.publish_queue.put_nowait(
-                        {"command": "led_off"}
-                    ),
-                ).classes("bg-gray-400 text-white rounded-lg px-3 py-2 text-sm")
+                    ui.button(
+                        "Strip OFF",
+                        on_click=lambda: mqtt.publish_queue.put_nowait(
+                            {"command": "led_off"}
+                        ),
+                    ).classes("bg-gray-400 text-white rounded-lg px-3 py-2 text-sm")
 
-                ui.button(
-                    "Idle 1",
-                    on_click=lambda: mqtt.publish_queue.put_nowait(
-                        {"command": "led_idle_1"}
-                    ),
-                ).classes("bg-purple-500 text-white rounded-lg px-3 py-2 text-sm")
+                # Idle mode selector buttons
+                ui.label("Idle Modes").classes("text-sm font-medium text-blue-700 mb-1")
+                with ui.row().classes("gap-2 mb-3 flex-wrap"):
+                    ui.button(
+                        "Mode 1 - Shifting",
+                        on_click=lambda: mqtt.publish_queue.put_nowait(
+                            {"command": "led_idle_1"}
+                        ),
+                    ).classes("bg-purple-500 text-white rounded-lg px-3 py-2 text-sm")
 
-                ui.button(
-                    "Idle 2",
-                    on_click=lambda: mqtt.publish_queue.put_nowait(
-                        {"command": "led_idle_2"}
-                    ),
-                ).classes("bg-purple-300 text-purple-900 rounded-lg px-3 py-2 text-sm")
+                    ui.button(
+                        "Mode 2 - Rainbow",
+                        on_click=lambda: mqtt.publish_queue.put_nowait(
+                            {"command": "led_idle_2"}
+                        ),
+                    ).classes("bg-purple-400 text-white rounded-lg px-3 py-2 text-sm")
+
+                    ui.button(
+                        "Mode 3 - Slow Alt",
+                        on_click=lambda: mqtt.publish_queue.put_nowait(
+                            {"command": "led_idle_3"}
+                        ),
+                    ).classes(
+                        "bg-purple-300 text-purple-900 rounded-lg px-3 py-2 text-sm"
+                    )
 
                 ui.separator()
 
@@ -331,7 +343,7 @@ def index():
                 ui.separator()
 
                 # Tail animation section — color + cycles + speed + fire button
-                ui.label("Tail animation").classes(
+                ui.label("Tail Chase").classes(
                     "text-sm font-medium text-blue-700 mt-2 mb-1"
                 )
                 with ui.row().classes("items-center gap-2 flex-wrap"):
@@ -364,6 +376,173 @@ def index():
                             }
                         ),
                     ).classes("bg-blue-600 text-white rounded-lg px-4 py-2 text-sm")
+
+                ui.separator()
+
+                # Rainbow wave section
+                ui.label("Rainbow Wave").classes(
+                    "text-sm font-medium text-blue-700 mt-2 mb-1"
+                )
+                with ui.row().classes("items-center gap-2 flex-wrap"):
+                    rainbow_cycles = ui.number(
+                        "Cycles", value=2, min=1, max=10
+                    ).classes("w-20")
+                    rainbow_speed = ui.number(
+                        "Speed ms", value=30, min=10, max=150
+                    ).classes("w-24")
+
+                    ui.button(
+                        "Run Rainbow",
+                        on_click=lambda: mqtt.publish_queue.put_nowait(
+                            {
+                                "command": "led_rainbow",
+                                "cycles": int(rainbow_cycles.value),
+                                "speed_ms": int(rainbow_speed.value),
+                            }
+                        ),
+                    ).classes(
+                        "bg-gradient-to-r from-red-500 via-yellow-500 to-blue-500 text-white rounded-lg px-4 py-2 text-sm"
+                    )
+
+                ui.separator()
+
+                # Pulse section — fade in/out effect
+                ui.label("Pulse (Fade In/Out)").classes(
+                    "text-sm font-medium text-blue-700 mt-2 mb-1"
+                )
+                with ui.row().classes("items-center gap-2 flex-wrap"):
+                    pulse_r = ui.number("R", value=0, min=0, max=255, step=1).classes(
+                        "w-16"
+                    )
+                    pulse_g = ui.number("G", value=100, min=0, max=255, step=1).classes(
+                        "w-16"
+                    )
+                    pulse_b = ui.number("B", value=255, min=0, max=255, step=1).classes(
+                        "w-16"
+                    )
+                    pulse_cycles = ui.number("Cycles", value=3, min=1, max=10).classes(
+                        "w-20"
+                    )
+                    pulse_speed = ui.number(
+                        "Speed ms", value=20, min=5, max=100
+                    ).classes("w-24")
+
+                    ui.button(
+                        "Run Pulse",
+                        on_click=lambda: mqtt.publish_queue.put_nowait(
+                            {
+                                "command": "led_pulse",
+                                "r": int(pulse_r.value),
+                                "g": int(pulse_g.value),
+                                "b": int(pulse_b.value),
+                                "cycles": int(pulse_cycles.value),
+                                "speed_ms": int(pulse_speed.value),
+                            }
+                        ),
+                    ).classes("bg-indigo-500 text-white rounded-lg px-4 py-2 text-sm")
+
+                ui.separator()
+
+                # Sparkle section — random LEDs flash
+                ui.label("Sparkle (Random Flash)").classes(
+                    "text-sm font-medium text-blue-700 mt-2 mb-1"
+                )
+                with ui.row().classes("items-center gap-2 flex-wrap"):
+                    sparkle_r = ui.number(
+                        "R", value=255, min=0, max=255, step=1
+                    ).classes("w-16")
+                    sparkle_g = ui.number(
+                        "G", value=255, min=0, max=255, step=1
+                    ).classes("w-16")
+                    sparkle_b = ui.number(
+                        "B", value=255, min=0, max=255, step=1
+                    ).classes("w-16")
+                    sparkle_dur = ui.number(
+                        "Duration ms", value=3000, min=500, max=10000, step=500
+                    ).classes("w-28")
+                    sparkle_density = ui.number(
+                        "Density %", value=20, min=5, max=50
+                    ).classes("w-24")
+
+                    ui.button(
+                        "Run Sparkle",
+                        on_click=lambda: mqtt.publish_queue.put_nowait(
+                            {
+                                "command": "led_sparkle",
+                                "r": int(sparkle_r.value),
+                                "g": int(sparkle_g.value),
+                                "b": int(sparkle_b.value),
+                                "duration_ms": int(sparkle_dur.value),
+                                "density": int(sparkle_density.value),
+                            }
+                        ),
+                    ).classes("bg-yellow-500 text-black rounded-lg px-4 py-2 text-sm")
+
+                ui.separator()
+
+                # Side chase section — lights each box side sequentially
+                ui.label("Side Chase (Box Sides)").classes(
+                    "text-sm font-medium text-blue-700 mt-2 mb-1"
+                )
+                with ui.row().classes("items-center gap-2 flex-wrap"):
+                    side_r = ui.number("R", value=0, min=0, max=255, step=1).classes(
+                        "w-16"
+                    )
+                    side_g = ui.number("G", value=255, min=0, max=255, step=1).classes(
+                        "w-16"
+                    )
+                    side_b = ui.number("B", value=100, min=0, max=255, step=1).classes(
+                        "w-16"
+                    )
+                    side_cycles = ui.number("Cycles", value=2, min=1, max=10).classes(
+                        "w-20"
+                    )
+                    side_hold = ui.number(
+                        "Hold ms", value=300, min=100, max=1000
+                    ).classes("w-24")
+
+                    ui.button(
+                        "Run Side Chase",
+                        on_click=lambda: mqtt.publish_queue.put_nowait(
+                            {
+                                "command": "led_side_chase",
+                                "r": int(side_r.value),
+                                "g": int(side_g.value),
+                                "b": int(side_b.value),
+                                "cycles": int(side_cycles.value),
+                                "hold_ms": int(side_hold.value),
+                            }
+                        ),
+                    ).classes("bg-teal-500 text-white rounded-lg px-4 py-2 text-sm")
+
+                ui.separator()
+
+                # Fill color section — solid color on entire strip
+                ui.label("Fill (Solid Color)").classes(
+                    "text-sm font-medium text-blue-700 mt-2 mb-1"
+                )
+                with ui.row().classes("items-center gap-2 flex-wrap"):
+                    fill_r = ui.number("R", value=255, min=0, max=255, step=1).classes(
+                        "w-16"
+                    )
+                    fill_g = ui.number("G", value=0, min=0, max=255, step=1).classes(
+                        "w-16"
+                    )
+                    fill_b = ui.number("B", value=0, min=0, max=255, step=1).classes(
+                        "w-16"
+                    )
+
+                    ui.button(
+                        "Fill Strip",
+                        on_click=lambda: mqtt.publish_queue.put_nowait(
+                            {
+                                "command": "led_fill",
+                                "r": int(fill_r.value),
+                                "g": int(fill_g.value),
+                                "b": int(fill_b.value),
+                            }
+                        ),
+                    ).classes("bg-red-500 text-white rounded-lg px-4 py-2 text-sm")
 
             # ---- OLED Controls card ----
             # Purple theme — display/screen related controls

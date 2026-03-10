@@ -42,7 +42,7 @@ async def main():
     oled.start()  # shows "OLED / STARTED / OK" on itself
 
     # Set the text that will be shown when the system is idle and waiting
-    oled.set_idle_screen(("READY", "SCAN CARD", ""))
+    oled.set_idle_screen(("READY", "SCAN CARD", "OR PHONE"))
 
     # --------------------------------------------------
     # Step 2 - LED strip
@@ -96,13 +96,21 @@ async def main():
     # Start the broker
     broker.start(oled)
     
-    # Broker waits until ready, rechecks every 30 seconds but box state still goes to
-    # normal mode so rfid scanning works even though we don't have connection
+    # Waits until connected, offline confirmed, or both brokers failed
     await broker.wait_ready()
     
     # If broker is offline (no networks found) show alternate idle screen
     if broker.offline:
-        oled.show_three_lines("Net, Broker", "Not Available", "Scan RFID")
+        oled.show_three_lines("NO NETWORK", "OFFLINE MODE", "SCAN RFID")
+        await asyncio.sleep_ms(2500)
+
+    # WiFi ok but both brokers unreachable - go to main mode, retry in background
+    elif broker.broker_unreachable:
+        oled.show_three_lines("NO BROKER", "MAIN MODE", "RETRYING...")
+        await asyncio.sleep_ms(2500)
+        oled.show_three_lines("WILL RETRY", "IN BACKGROUND", "NOTIFY IF OK")
+        await asyncio.sleep_ms(2500)
+
 
     # --------------------------------------------------
     # Step 7 - Procedures

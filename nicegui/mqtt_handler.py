@@ -102,8 +102,10 @@ def handle_inbound(payload):
     state["last_event"] = payload
 
     if event == "access_allowed":
-        label = data.get("label", "")
-        uid_sfx = data.get("uid_suffix", "")
+        # Check both top-level and nested data for label/uid_suffix
+        label = payload.get("label", "") or data.get("label", "")
+        uid_sfx = payload.get("uid_suffix", "") or data.get("uid_suffix", "")
+        # Only show REMOTE if source is not rfid (i.e., dashboard triggered it)
         display = label if label else (uid_sfx if uid_sfx else "REMOTE")
         state["last_rfid"] = {"result": "ALLOWED", "display": display, "ts": ts}
         add_log("ACCESS ALLOWED  ->  {}  [{}]".format(display, source))

@@ -51,22 +51,22 @@ class MqttJsonBroker:
         broker_fallback,
         base_topic,
     ):
-        
+
         # wired via start(oled) - shows boot status on screen
-        self.oled = None 
-        
+        self.oled = None
+
         # WiFi credentials - primary tried first, fallback if primary fails
-        self.wifi_primary  = wifi_primary
+        self.wifi_primary = wifi_primary
         self.wifi_fallback = wifi_fallback
 
         # MQTT broker addresses - primary tried first, fallback if unreachable
-        self.broker_primary  = broker_primary
+        self.broker_primary = broker_primary
         self.broker_fallback = broker_fallback
 
         # Build the full topic strings from the shared base topic
-        self.base_topic    = base_topic
+        self.base_topic = base_topic
         self.command_topic = "{}/Commands".format(base_topic)  # we subscribe to this
-        self.event_topic   = "{}/Events".format(base_topic)    # we publish to this
+        self.event_topic = "{}/Events".format(base_topic)  # we publish to this
 
         # WiFi interface - STA_IF = station mode (client, not access point)
         self.wlan = network.WLAN(network.STA_IF)
@@ -76,13 +76,16 @@ class MqttJsonBroker:
 
         # True when connected and ready to publish/receive
         self.connected = False
-        
+
         # True when no network found - box runs in local-only mode
-        self.offline   = False
-        
+        self.offline = False
+        self.broker_unreachable = False  # WiFi ok but both brokers failed
+
         # Wired externally before start() using set_* methods below
-        self.command_callback      = None  # fn(dict) called with each incoming JSON command
-        self.on_connected_callback = None  # fn() called after each successful MQTT connect
+        self.command_callback = None  # fn(dict) called with each incoming JSON command
+        self.on_connected_callback = (
+            None  # fn() called after each successful MQTT connect
+        )
 
     # ------------------------------------------------------------
     # Wiring methods - call these before start()
@@ -100,10 +103,13 @@ class MqttJsonBroker:
     # Internal console log - broker does not use OLED directly
     # OLED feedback for WiFi/MQTT status comes from the universal logger
     # ------------------------------------------------------------
-
-    def log(self, line1, line2="", line3=""):
+            
+    async def log(self, line1, line2="", line3="", hold_ms=2000):
         print("[BROKER]", line1, "|", line2, "|", line3)
-
+        if self.oled:
+            self.oled.show_three_lines(str(line1)[:16], str(line2)[:16], str(line3)[:16])
+            await asyncio.sleep_ms(hold_ms)
+            
     # ------------------------------------------------------------
     # Public API - called from main.py and procedures
     # ------------------------------------------------------------
@@ -119,11 +125,11 @@ class MqttJsonBroker:
         # Other background tasks (OLED, LED screensaver) still run during this wait
         while not self.connected:
             await asyncio.sleep_ms(200)
-            
+
     async def wait_ready(self):
         # Unblocks when either connected to broker OR offline mode is confirmed
         # Replaces wait_connected() - allows main() to proceed without network
-        while not self.connected and not self.offline:
+        while not self.connected and not self.offline and not self.broker_unreachable:
             await asyncio.sleep_ms(200)
 
     def send_json(self, payload_dict):
@@ -155,37 +161,49 @@ class MqttJsonBroker:
             return False
 
     async def run_forever(self):
-        # Outer loop - keeps trying forever, 30s between offline retries
+        # Outer loop - keeps the box connected forever, restarts on any failure
         while True:
             try:
-                connected_wifi = await self.connect_wifi()
+                # Skip WiFi reconnect if already connected - only re-enter on full drop
+                if not self.wlan.isconnected():
+                    connected_wifi = await self.connect_wifi()
+                    if not connected_wifi:
+                        # No network in range - go offline and scan again in 30s
+                        self.offline = True
+                        await self.log("OFFLINE", "NO NETWORK", "RETRY IN 90S")
+                        await asyncio.sleep_ms(90000)
+                        continue
 
-                if not connected_wifi:
-                    # No network in range - enter offline mode and retry in 30s
-                    self.offline = True
-                    self.log("OFFLINE", "no network found", "retry in 30s")
-                    await asyncio.sleep_ms(30000)
-                    continue  # skip broker, go back to top and scan again
-
-                # WiFi up - try broker
+                # WiFi is up - clear offline flag and attempt broker connection
                 self.offline = False
+                
+                if self.broker_unreachable:
+                    await self.log("RETRYING", "BROKERS...", "", hold_ms=1500)
+                    
                 await self.connect_mqtt()
+                
+                # Retry failed again - restore idle screen so box looks normal
+                if self.broker_unreachable and self.oled:
+                    self.oled.show_main_mode()
+
+                # Blocks here until connection drops - loops back on any error
                 await self.receive_loop()
 
             except Exception as error:
                 print("[BROKER] loop error:", error)
 
+            # Clean up stale client state before retrying
             self.connected = False
-            self.client    = None
-            self.log("DISCONNECTED", "retrying soon")
-            await asyncio.sleep_ms(800)
-
-
+            self.client = None
+            await self.log("DISCONNECTED", "RETRYING SOON", "")
+            # Slow retry when broker is unreachable but WiFi is fine - true background mode
+            retry_delay = 120000 if self.broker_unreachable else 800
+            await asyncio.sleep_ms(retry_delay)
 
     # ------------------------------------------------------------
     # WiFi connection - tries primary then fallback
     # ------------------------------------------------------------
-    
+
     async def connect_wifi(self):
         # Returns True if either network connects, False if both unavailable
         self.wlan.active(True)
@@ -194,28 +212,14 @@ class MqttJsonBroker:
         if await self.try_wifi(self.wifi_fallback):
             return True
         return False
-    
-    """
-    async def connect_wifi(self):
-        # Activate the WiFi radio in station mode
-        self.wlan.active(True)
 
-        # Try the primary network first, fall back if it times out
-        if not await self.try_wifi(self.wifi_primary):
-            await self.try_wifi(self.wifi_fallback)
-    """
-    
     async def try_wifi(self, cfg):
-        # Scan first - skip if SSID not visible (saves 10s timeout)
-        # Resets radio state before connecting to fix internal stuck state
         ssid = cfg.get("ssid", "")
         if not ssid:
             return False
 
         if not self.scan_available(ssid):
-            self.log("WIFI", "not in range", ssid)
-            if self.oled:
-                self.oled.show_three_lines("WIFI", "CONNECTING", ssid[:10])
+            await self.log("WIFI", "NOT IN RANGE", ssid[:10])
             return False
 
         # Reset radio to clear any stuck internal state from previous attempt
@@ -224,18 +228,17 @@ class MqttJsonBroker:
         await asyncio.sleep_ms(300)
         self.wlan.active(True)
 
-        self.log("WIFI", "connecting", ssid)
+        # Show connecting - short hold, no need to wait long
+        await self.log("WIFI", "CONNECTING", ssid[:10], hold_ms=500)
         self.wlan.connect(ssid, cfg.get("password", ""))
 
         for _ in range(40):
             if self.wlan.isconnected():
-                self.log("WIFI", "connected", ssid)
-                if self.oled:
-                    self.oled.show_three_lines("WIFI", "CONNECTED", ssid[:10])
+                await self.log("WIFI", "CONNECTED", ssid[:10], hold_ms=2000)
                 return True
             await asyncio.sleep_ms(250)
 
-        self.log("WIFI", "failed", ssid)
+        await self.log("WIFI", "FAILED", ssid[:10])
         return False
 
     # ------------------------------------------------------------
@@ -243,25 +246,30 @@ class MqttJsonBroker:
     # ------------------------------------------------------------
 
     async def connect_mqtt(self):
-        # Try the primary broker first, fall back to the Pi broker if unreachable
-        if not await self.try_mqtt(self.broker_primary):
-            await self.try_mqtt(self.broker_fallback)
+        # Try primary then fallback - if both fail, mark unreachable so main() can proceed
+        if await self.try_mqtt(self.broker_primary):
+            return
+        if await self.try_mqtt(self.broker_fallback):
+            return
+        self.broker_unreachable = True
+        await self.log("MQTT", "FAILED - Retry","After 90 seconds")
 
     async def try_mqtt(self, host):
         # Attempt to connect to one MQTT broker, subscribe, and mark as connected
         if not host:
             return False
 
-        self.log("MQTT", "connecting", host)
-        if self.oled:
-            self.oled.show_three_lines("MQTT", "CONNECTING", host)
+        if not self.broker_unreachable:
+            await self.log("MQTT", "CONNECTING", host[:16], hold_ms=500)
+        else:
+            print("[BROKER] MQTT | CONNECTING |", host)
 
         try:
             # Unique client ID prevents the broker from rejecting duplicate connections
             client_id = "security_box_{}".format(time.ticks_ms())
 
             # Build a fresh client every attempt - avoids stale socket state
-            self.client = MQTTClient(client_id, host, keepalive=30)
+            self.client = MQTTClient(client_id, host, keepalive=60)
 
             # Wire the message callback before connecting
             self.client.set_callback(self.on_message)
@@ -272,11 +280,17 @@ class MqttJsonBroker:
             # Mark connected so send_json() and wait_connected() unblock
             self.connected = True
 
-            self.log("MQTT", "connected", host)
-            self.log("Subscribed to:", self.command_topic)
-            self.log("Publishing to:", self.event_topic)
-            if self.oled:
-                self.oled.show_three_lines("MQTT", "CONNECTED", host)
+            print("[BROKER] Subscribed:", self.command_topic)
+            print("[BROKER] Publishing:", self.event_topic)
+            if not self.broker_unreachable:
+                await self.log("MQTT", "CONNECTED", host[:16])
+            else:
+                print("[BROKER] MQTT | CONNECTED |", host)
+
+            # If recovering from a previous broker failure, show a recovery message
+            if self.broker_unreachable:
+                self.broker_unreachable = False
+                await self.log("BROKER", "RECOVERED", host[:16], hold_ms=2500)
 
             # Notify main.py so it can return the OLED to idle mode
             if self.on_connected_callback:
@@ -285,27 +299,46 @@ class MqttJsonBroker:
             return True
 
         except Exception as error:
-            self.log("MQTT", "failed", str(error)[:20])
+            await self.log("MQTT", "FAILED", str(error)[:16])
             self.connected = False
-            self.client    = None
+            self.client = None
             return False
 
     # ------------------------------------------------------------
     # Receive loop - polls for incoming messages while connected
-    # Yields every 30ms so RFID, reed, and OLED tasks keep running
+    # Yields every 30ms so RFID, reed, LED's and OLED tasks keep running
     # ------------------------------------------------------------
 
     async def receive_loop(self):
+        # umqtt.simple does NOT send keepalive pings automatically.
+        # We must call ping() manually before the broker's keepalive window expires.
+        # keepalive=60s -> ping every 20s to stay safely inside the window.
+        last_ping = time.ticks_ms()
+        ping_interval_ms = 20000
+
         while self.connected and self.client is not None:
             try:
-                # check_msg() returns immediately if no message is waiting
                 self.client.check_msg()
             except Exception as error:
-                self.log("MQTT", "rx error", str(error)[:20])
+                await self.log("MQTT", "RX ERROR", str(error)[:16])
                 self.connected = False
                 return
 
-            # Short yield - keeps the event loop responsive between message checks
+            # Send keepalive ping before broker times out
+            now = time.ticks_ms()
+            if time.ticks_diff(now, last_ping) >= ping_interval_ms:
+                try:
+                    self.client.ping()
+                    last_ping = now
+                    
+                    # Disable this print so it doesnt fill up the console constantly
+                    #print("Pinging", "Server","For KeepAlive")
+                   
+                except Exception as error:
+                    await self.log("MQTT", "PING FAILED", str(error)[:16])
+                    self.connected = False
+                    return
+
             await asyncio.sleep_ms(30)
 
     # ------------------------------------------------------------
@@ -318,7 +351,7 @@ class MqttJsonBroker:
         try:
             payload = ujson.loads(msg_bytes.decode())
         except Exception as error:
-            self.log("RX", "bad JSON", str(error)[:20])
+            print("[BROKER] RX | bad JSON |", str(error)[:20])
             return
 
         # Hand the parsed dict to procedures.handle_command
@@ -326,4 +359,4 @@ class MqttJsonBroker:
             try:
                 self.command_callback(payload)
             except Exception as error:
-                self.log("RX", "handler error", str(error)[:20])
+                print("[BROKER] RX | handler error |", str(error)[:20])
